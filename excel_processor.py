@@ -1,7 +1,8 @@
 import pandas as pd
 import os
 import glob
-from typing import List, Tuple
+import re
+from typing import List, Tuple, Dict, Optional
 
 class ExcelProcessor:
     """Excel文件处理工具"""
@@ -13,6 +14,16 @@ class ExcelProcessor:
         self.deduplicate = False
         self.dedup_fields = []
         self.output_filename = "result.xlsx"
+        
+        # 学生姓名补充功能相关属性
+        self.enable_name_supplement = False
+        self.student_name_mapping = {}  # 学号到学生姓名的映射
+        self.default_student_name = "未知学生"
+        self.supplement_stats = {
+            'total_supplemented': 0,
+            'successful_matches': 0,
+            'default_value_used': 0
+        }
     
     def select_files(self, folder_path: str = ".") -> List[str]:
         """
@@ -120,6 +131,262 @@ class ExcelProcessor:
         print(f"\n✅ 总共发现 {len(self.all_fields)} 个不同字段")
         
         return self.all_fields
+    
+    def analyze_student_name_situation(self, files: List[str]) -> Dict:
+        """
+        分析学生姓名补充情况
+        
+        Args:
+            files: 文件列表
+            
+        Returns:
+            分析结果字典
+        """
+        analysis_result = {
+            'files_with_both': [],  # 同时包含学号和姓名的文件
+            'files_missing_name': [],  # 包含学号但缺少姓名的文件
+            'files_without_student_id': [],  # 不包含学号的文件
+            'total_files': len(files)
+        }
+        
+        print(f"\n🔍 分析学生姓名补充情况...")
+        
+        for file in files:
+            try:
+                df = pd.read_excel(file)
+                file_fields = list(df.columns)
+                filename = os.path.basename(file)
+                
+                # 支持多种学号字段名称
+                has_student_id = any(id_field in file_fields for id_field in ['学号', '*学号'])
+                # 支持多种学生姓名字段名称
+                has_student_name = any(name in file_fields for name in ['学生姓名', '*学生姓名'])
+                
+                if has_student_id and has_student_name:
+                    analysis_result['files_with_both'].append(file)
+                    print(f"✅ {filename}: 包含学号和姓名")
+                elif has_student_id and not has_student_name:
+                    analysis_result['files_missing_name'].append(file)
+                    print(f"⚠️  {filename}: 包含学号但缺少姓名")
+                else:
+                    analysis_result['files_without_student_id'].append(file)
+                    print(f"ℹ️  {filename}: 不包含学号")
+                    
+            except Exception as e:
+                print(f"❌ 分析文件 '{os.path.basename(file)}' 时出错: {str(e)}")
+                analysis_result['files_without_student_id'].append(file)
+        
+        return analysis_result
+    
+    def build_student_name_mapping(self, files_with_both: List[str]) -> Dict[str, str]:
+        """
+        构建学号到学生姓名的映射
+        
+        Args:
+            files_with_both: 同时包含学号和姓名的文件列表
+            
+        Returns:
+            学号到学生姓名的映射字典
+        """
+        if not files_with_both:
+            return {}
+        
+        print(f"\n🔄 构建学号到学生姓名的映射...")
+        mapping = {}
+        total_mappings = 0
+        
+        for file in files_with_both:
+            try:
+                df = pd.read_excel(file)
+                filename = os.path.basename(file)
+                
+                # 确定学号字段名称
+                student_id_field = None
+                for id_field in ['学号', '*学号']:
+                    if id_field in df.columns:
+                        student_id_field = id_field
+                        break
+                
+                if not student_id_field:
+                    print(f"⚠️  文件 '{filename}' 缺少学号字段，跳过")
+                    continue
+                
+                # 确定学生姓名字段名称
+                student_name_field = None
+                for name_field in ['学生姓名', '*学生姓名']:
+                    if name_field in df.columns:
+                        student_name_field = name_field
+                        break
+                
+                if not student_name_field:
+                    print(f"⚠️  文件 '{filename}' 缺少学生姓名字段，跳过")
+                    continue
+                
+                # 构建映射关系
+                file_mappings = 0
+                for _, row in df.iterrows():
+                    student_id = str(row[student_id_field]).strip()
+                    student_name = str(row[student_name_field]).strip()
+                    
+                    # 跳过空值
+                    if pd.isna(student_id) or pd.isna(student_name) or student_id == '' or student_name == '':
+                        continue
+                    
+                    # 如果学号已存在，优先使用第一个匹配的姓名
+                    if student_id not in mapping:
+                        mapping[student_id] = student_name
+                        file_mappings += 1
+                
+                total_mappings += file_mappings
+                print(f"📊 {filename}: 添加了 {file_mappings} 个映射关系")
+                
+            except Exception as e:
+                print(f"❌ 处理文件 '{os.path.basename(file)}' 时出错: {str(e)}")
+                continue
+        
+        print(f"✅ 总共构建了 {total_mappings} 个学号-姓名映射关系")
+        return mapping
+    
+    def configure_name_supplement(self, analysis_result: Dict) -> Tuple[bool, str]:
+        """
+        配置学生姓名补充功能
+        
+        Args:
+            analysis_result: 分析结果
+            
+        Returns:
+            (是否启用补充功能, 默认学生姓名)
+        """
+        files_missing_name = analysis_result['files_missing_name']
+        files_with_both = analysis_result['files_with_both']
+        
+        if not files_missing_name:
+            print(f"\n✅ 所有文件都包含学生姓名字段，无需补充")
+            return False, ""
+        
+        if not files_with_both:
+            print(f"\n⚠️  没有找到包含学号和姓名的文件，无法构建映射关系")
+            print(f"📝 建议：至少需要一个包含学号和姓名的文件来构建映射关系")
+            return False, ""
+        
+        print(f"\n=== 学生姓名补充配置 ===")
+        print(f"📊 分析结果:")
+        print(f"  • 包含学号和姓名的文件: {len(files_with_both)} 个")
+        print(f"  • 缺少学生姓名的文件: {len(files_missing_name)} 个")
+        print(f"  • 不包含学号的文件: {len(analysis_result['files_without_student_id'])} 个")
+        
+        print(f"\n🤔 检测到部分文件缺少学生姓名字段，是否启用学生姓名补充功能？")
+        print(f"📝 补充功能将从其他文件中根据学号匹配获取学生姓名")
+        
+        choice = input("请选择 (y/n，默认y): ").strip().lower()
+        enable_supplement = choice not in ['n', 'no', '否']
+        
+        if not enable_supplement:
+            print(f"✅ 已选择不启用学生姓名补充功能")
+            return False, ""
+        
+        # 设置默认学生姓名
+        print(f"\n📝 请输入未找到匹配学生姓名时使用的默认值")
+        default_name = input(f"默认值（默认：{self.default_student_name}）: ").strip()
+        if not default_name:
+            default_name = self.default_student_name
+        
+        print(f"✅ 已设置默认学生姓名: {default_name}")
+        return True, default_name
+    
+    def supplement_student_names(self, df: pd.DataFrame, mapping: Dict[str, str], 
+                               default_name: str) -> pd.DataFrame:
+        """
+        为数据框补充学生姓名
+        
+        Args:
+            df: 数据框
+            mapping: 学号到学生姓名的映射
+            default_name: 默认学生姓名
+            
+        Returns:
+            补充后的数据框
+        """
+        # 确定学号字段名称
+        student_id_field = None
+        for id_field in ['学号', '*学号']:
+            if id_field in df.columns:
+                student_id_field = id_field
+                break
+        
+        if not student_id_field:
+            print(f"⚠️  数据框不包含学号字段，无法补充学生姓名")
+            return df
+        
+        # 确定学生姓名字段名称
+        student_name_field = None
+        for name_field in ['学生姓名', '*学生姓名']:
+            if name_field in df.columns:
+                student_name_field = name_field
+                break
+        
+        # 如果已经有学生姓名字段，先检查是否需要补充
+        if student_name_field:
+            # 检查是否有空的学生姓名
+            missing_names = df[student_name_field].isna() | (df[student_name_field].astype(str).str.strip() == '')
+            if not missing_names.any():
+                print(f"✅ 学生姓名字段已完整，无需补充")
+                return df
+        
+        # 创建学生姓名字段（如果不存在）
+        if not student_name_field:
+            student_name_field = '学生姓名'  # 默认使用标准名称
+            df[student_name_field] = default_name
+            print(f"📝 创建学生姓名字段")
+        
+        # 补充学生姓名
+        supplemented_count = 0
+        successful_matches = 0
+        default_used = 0
+        
+        for idx, row in df.iterrows():
+            student_id = str(row[student_id_field]).strip()
+            
+            # 跳过空学号
+            if pd.isna(student_id) or student_id == '':
+                continue
+            
+            # 检查当前学生姓名是否为空
+            current_name = str(row[student_name_field]).strip()
+            if pd.isna(current_name) or current_name == '' or current_name == default_name:
+                # 尝试从映射中获取学生姓名（精确匹配）
+                if student_id in mapping:
+                    df.at[idx, student_name_field] = mapping[student_id]
+                    successful_matches += 1
+                else:
+                    # 尝试正则匹配（支持一位字符的模糊匹配）
+                    matched_name = None
+                    for map_id, map_name in mapping.items():
+                        # 如果学号长度相同，尝试一位字符的模糊匹配
+                        if len(student_id) == len(map_id):
+                            # 计算不同字符的数量
+                            diff_count = sum(1 for a, b in zip(student_id, map_id) if a != b)
+                            if diff_count <= 1:  # 允许一位字符的差异
+                                matched_name = map_name
+                                break
+                    
+                    if matched_name:
+                        df.at[idx, student_name_field] = matched_name
+                        successful_matches += 1
+                    else:
+                        df.at[idx, student_name_field] = default_name
+                        default_used += 1
+                    supplemented_count += 1
+        
+        # 更新统计信息
+        self.supplement_stats['total_supplemented'] += supplemented_count
+        self.supplement_stats['successful_matches'] += successful_matches
+        self.supplement_stats['default_value_used'] += default_used
+        
+        if supplemented_count > 0:
+            print(f"📊 补充统计: 成功匹配 {successful_matches} 个，使用默认值 {default_used} 个")
+        
+        return df
     
     def get_file_fields(self, file_path: str) -> List[str]:
         """
@@ -306,14 +573,53 @@ class ExcelProcessor:
                 print(f"\n📄 处理文件 {i}/{len(files)}: {os.path.basename(file)}")
                 df = pd.read_excel(file)
                 
-                # 检查文件是否包含所有选中字段
-                missing_fields = [field for field in selected_fields if field not in df.columns]
+                # 检查文件是否包含所有选中字段，支持学号和学生姓名字段的变体
+                missing_fields = []
+                for field in selected_fields:
+                    if field not in df.columns:
+                        # 如果是学号字段，检查是否有变体
+                        if field == '学号' and '*学号' in df.columns:
+                            continue  # 有*学号变体，不算缺失
+                        elif field == '*学号' and '学号' in df.columns:
+                            continue  # 有学号变体，不算缺失
+                        # 如果是学生姓名字段，检查是否有变体
+                        elif field == '学生姓名' and '*学生姓名' in df.columns:
+                            continue  # 有*学生姓名变体，不算缺失
+                        elif field == '*学生姓名' and '学生姓名' in df.columns:
+                            continue  # 有学生姓名变体，不算缺失
+                        missing_fields.append(field)
+                
                 if missing_fields:
                     print(f"⚠️  警告：文件缺少字段 {missing_fields}，跳过此文件")
                     continue
                 
-                # 提取选中的字段
-                selected_data = df[selected_fields].copy()
+                # 提取选中的字段，处理学号和学生姓名字段的变体
+                df_temp = df.copy()
+                actual_fields = []
+                
+                for field in selected_fields:
+                    if field in df.columns:
+                        actual_fields.append(field)
+                    elif field == '学号' and '*学号' in df.columns:
+                        # 将*学号重命名为学号
+                        df_temp['学号'] = df_temp['*学号']
+                        actual_fields.append('学号')
+                    elif field == '*学号' and '学号' in df.columns:
+                        # 将学号重命名为*学号
+                        df_temp['*学号'] = df_temp['学号']
+                        actual_fields.append('*学号')
+                    elif field == '学生姓名' and '*学生姓名' in df.columns:
+                        # 将*学生姓名重命名为学生姓名
+                        df_temp['学生姓名'] = df_temp['*学生姓名']
+                        actual_fields.append('学生姓名')
+                    elif field == '*学生姓名' and '学生姓名' in df.columns:
+                        # 将学生姓名重命名为*学生姓名
+                        df_temp['*学生姓名'] = df_temp['学生姓名']
+                        actual_fields.append('*学生姓名')
+                    else:
+                        actual_fields.append(field)
+                
+                selected_data = df_temp[actual_fields].copy()
                 
                 all_data.append(selected_data)
                 file_rows = len(selected_data)
@@ -332,6 +638,24 @@ class ExcelProcessor:
         print(f"\n🔄 正在合并数据...")
         combined_df = pd.concat(all_data, ignore_index=True)
         print(f"✅ 合并完成，总行数: {len(combined_df)}")
+        
+        # 学生姓名补充处理
+        if self.enable_name_supplement and self.student_name_mapping:
+            print(f"\n🔄 正在补充学生姓名...")
+            combined_df = self.supplement_student_names(
+                combined_df, 
+                self.student_name_mapping, 
+                self.default_student_name
+            )
+            
+            # 显示补充统计信息
+            if self.supplement_stats['total_supplemented'] > 0:
+                print(f"\n📊 学生姓名补充统计:")
+                print(f"  • 成功匹配: {self.supplement_stats['successful_matches']} 个记录")
+                print(f"  • 使用默认值: {self.supplement_stats['default_value_used']} 个记录")
+                success_rate = (self.supplement_stats['successful_matches'] / 
+                              self.supplement_stats['total_supplemented'] * 100)
+                print(f"  • 补充成功率: {success_rate:.1f}%")
         
         # 去重处理
         if deduplicate and dedup_fields:
@@ -407,25 +731,49 @@ class ExcelProcessor:
                 df.to_excel(writer, sheet_name='合并数据', index=False)
                 
                 # 统计信息表
+                stats_items = [
+                    '总记录数',
+                    '处理文件数',
+                    '选择字段数',
+                    '是否去重',
+                    '去重字段数',
+                    '删除重复记录数'
+                ]
+                stats_values = [
+                    len(df),
+                    len(self.selected_files),
+                    len(self.selected_fields),
+                    '是' if self.deduplicate else '否',
+                    len(self.dedup_fields) if self.deduplicate else 0,
+                    len(df) - len(df.drop_duplicates(subset=self.dedup_fields)) if self.deduplicate and self.dedup_fields else 0
+                ]
+                
+                # 添加学生姓名补充统计
+                if self.enable_name_supplement:
+                    stats_items.extend([
+                        '是否启用学生姓名补充',
+                        '成功匹配学生姓名数',
+                        '使用默认学生姓名数',
+                        '学生姓名补充成功率'
+                    ])
+                    success_rate = (self.supplement_stats['successful_matches'] / 
+                                  max(self.supplement_stats['total_supplemented'], 1) * 100)
+                    stats_values.extend([
+                        '是',
+                        self.supplement_stats['successful_matches'],
+                        self.supplement_stats['default_value_used'],
+                        f"{success_rate:.1f}%"
+                    ])
+                else:
+                    stats_items.append('是否启用学生姓名补充')
+                    stats_values.append('否')
+                
+                stats_items.append('处理时间')
+                stats_values.append(pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'))
+                
                 stats_data = {
-                    '统计项目': [
-                        '总记录数',
-                        '处理文件数',
-                        '选择字段数',
-                        '是否去重',
-                        '去重字段数',
-                        '删除重复记录数',
-                        '处理时间'
-                    ],
-                    '数值': [
-                        len(df),
-                        len(self.selected_files),
-                        len(self.selected_fields),
-                        '是' if self.deduplicate else '否',
-                        len(self.dedup_fields) if self.deduplicate else 0,
-                        len(df) - len(df.drop_duplicates(subset=self.dedup_fields)) if self.deduplicate and self.dedup_fields else 0,
-                        pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-                    ]
+                    '统计项目': stats_items,
+                    '数值': stats_values
                 }
                 stats_df = pd.DataFrame(stats_data)
                 stats_df.to_excel(writer, sheet_name='处理统计', index=False)
@@ -462,7 +810,7 @@ class ExcelProcessor:
         """设置输出文件名"""
         print(f"\n=== 步骤4.5: 输出设置 ===")
         print(f"📝 当前输出文件名: {self.output_filename}")
-        filename = input("请输入新的输出文件名（或按回车保持默认）: ").strip()
+        filename = input("请输入新的输出文件名列如G:\\wang\\excel（默认格式为xlsx）: ").strip()
         if filename:
             # 确保文件扩展名正确
             if not filename.endswith(('.xlsx', '.xls')):
@@ -475,8 +823,8 @@ class ExcelProcessor:
     def run(self):
         """运行主程序"""
         print("=" * 60)
-        print("🎯 Excel文件处理工具 v2.0")
-        print("�� 功能：多文件数据合并、字段选择、去重处理")
+        print("🎯 Excel文件处理工具 v2.1")
+        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充")
         print("=" * 60)
         
         try:
@@ -502,6 +850,33 @@ class ExcelProcessor:
                 print("❌ 未选择任何字段，程序退出")
                 return
             
+            # 3.5. 学生姓名补充配置
+            analysis_result = self.analyze_student_name_situation(files)
+            self.enable_name_supplement, self.default_student_name = self.configure_name_supplement(analysis_result)
+            
+            if self.enable_name_supplement:
+                # 构建学号到学生姓名的映射
+                self.student_name_mapping = self.build_student_name_mapping(analysis_result['files_with_both'])
+                
+                # 确保学生姓名字段被选中
+                student_name_added = False
+                for name_field in ['学生姓名', '*学生姓名']:
+                    if name_field in selected_fields:
+                        student_name_added = True
+                        break
+                
+                if not student_name_added:
+                    # 检查哪个学生姓名字段在文件中出现更多
+                    standard_count = sum(1 for f in files if '学生姓名' in self.get_file_fields(f))
+                    star_count = sum(1 for f in files if '*学生姓名' in self.get_file_fields(f))
+                    
+                    if star_count >= standard_count:
+                        selected_fields.append('*学生姓名')
+                        print(f"📝 自动添加*学生姓名字段到选择列表")
+                    else:
+                        selected_fields.append('学生姓名')
+                        print(f"📝 自动添加学生姓名字段到选择列表")
+            
             # 4. 去重配置
             deduplicate, dedup_fields = self.configure_deduplication()
             
@@ -521,12 +896,14 @@ class ExcelProcessor:
                 print(f"\n" + "=" * 60)
                 print("🎉 处理完成！")
                 print("=" * 60)
-                print(f"�� 结果文件: {output_path}")
-                print(f"�� 处理记录数: {len(result_df)}")
+                print(f"📄 结果文件: {output_path}")
+                print(f"📊 处理记录数: {len(result_df)}")
                 print(f"📁 处理文件数: {len(files)}")
                 print(f"📋 选择字段数: {len(selected_fields)}")
                 if deduplicate and dedup_fields:
-                    print(f"�� 去重字段: {', '.join(dedup_fields)}")
+                    print(f"🔍 去重字段: {', '.join(dedup_fields)}")
+                if self.enable_name_supplement:
+                    print(f"👤 学生姓名补充: 成功匹配 {self.supplement_stats['successful_matches']} 个，使用默认值 {self.supplement_stats['default_value_used']} 个")
                 
 
             
