@@ -24,6 +24,23 @@ class ExcelProcessor:
             'successful_matches': 0,
             'default_value_used': 0
         }
+
+        # 同步模式相关属性
+        self.operation_mode = "merge"  # "merge" or "sync"
+        self.source_file = ""  # 源文件路径变量
+        self.target_file = ""  # 目标文件路径变量
+        self.link_field = ""  # 关联字段变量
+        self.update_fields = []  # 更新字段列表变量
+        self.output_directory = ""  # 输出目录变量
+        self.unmatched_handling = "empty"  # 未匹配记录处理方式: "empty" 或 "default"
+        self.default_values = {}  # 默认值字典
+        self.sync_stats = {
+            'source_records': 0,
+            'target_records': 0,
+            'updated_records': 0,
+            'failed_records': 0,
+            'sync_success_rate': 0.0
+        }
     
     def select_files(self, folder_path: str = ".") -> List[str]:
         """
@@ -344,10 +361,17 @@ class ExcelProcessor:
         successful_matches = 0
         default_used = 0
         
+        # 过滤掉学号为空的记录
+        before_filter = len(df)
+        df = df.dropna(subset=[student_id_field])
+        after_filter = len(df)
+        if before_filter > after_filter:
+            print(f"⚠️  过滤掉 {before_filter - after_filter} 条学号为空的记录")
+        
         for idx, row in df.iterrows():
             student_id = str(row[student_id_field]).strip()
             
-            # 跳过空学号
+            # 跳过空学号（双重检查）
             if pd.isna(student_id) or student_id == '':
                 continue
             
@@ -639,6 +663,16 @@ class ExcelProcessor:
         combined_df = pd.concat(all_data, ignore_index=True)
         print(f"✅ 合并完成，总行数: {len(combined_df)}")
         
+        # 过滤掉学号为空的记录
+        student_id_fields = [col for col in combined_df.columns if '学号' in col]
+        if student_id_fields:
+            before_filter = len(combined_df)
+            combined_df = combined_df.dropna(subset=student_id_fields)
+            after_filter = len(combined_df)
+            if before_filter > after_filter:
+                print(f"⚠️  过滤掉 {before_filter - after_filter} 条学号为空的记录")
+                print(f"✅ 过滤后总行数: {len(combined_df)}")
+        
         # 学生姓名补充处理
         if self.enable_name_supplement and self.student_name_mapping:
             print(f"\n🔄 正在补充学生姓名...")
@@ -823,9 +857,45 @@ class ExcelProcessor:
     def run(self):
         """运行主程序"""
         print("=" * 60)
-        print("🎯 Excel文件处理工具 v2.1")
-        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充")
+        print("🎯 Excel文件处理工具 v2.2")
+        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充、数据同步")
         print("=" * 60)
+        
+        # 选择操作模式
+        mode = self.select_operation_mode()
+        
+        if mode == "merge":
+            self.run_merge_mode()
+        elif mode == "sync":
+            self.run_sync_mode()
+        else:
+            print("👋 程序退出")
+    
+    def select_operation_mode(self) -> str:
+        """
+        选择操作模式
+        
+        Returns:
+            str: 操作模式 ("merge" 或 "sync")
+        """
+        print("\n请选择操作模式：")
+        print("1. 合并到空Excel（创建新的合并文件）")
+        print("2. 同步到有数据的Excel（更新现有文件）")
+        
+        while True:
+            choice = input("\n请选择 (1/2): ").strip()
+            if choice == "1":
+                print("✅ 已选择：合并模式")
+                return "merge"
+            elif choice == "2":
+                print("✅ 已选择：同步模式")
+                return "sync"
+            else:
+                print("❌ 无效选择，请输入 1 或 2")
+    
+    def run_merge_mode(self):
+        """运行合并模式"""
+        print("\n🔄 启动合并模式...")
         
         try:
             # 1. 文件选择
@@ -904,13 +974,560 @@ class ExcelProcessor:
                     print(f"🔍 去重字段: {', '.join(dedup_fields)}")
                 if self.enable_name_supplement:
                     print(f"👤 学生姓名补充: 成功匹配 {self.supplement_stats['successful_matches']} 个，使用默认值 {self.supplement_stats['default_value_used']} 个")
-                
-
             
         except KeyboardInterrupt:
             print("\n\n⚠️  程序被用户中断")
         except Exception as e:
             print(f"\n❌ 程序执行出错: {str(e)}")
+    
+    def run_sync_mode(self):
+        """运行同步模式"""
+        print("\n🔄 启动同步模式...")
+        
+        try:
+            # 1. 文件角色选择
+            self.select_file_roles()
+            
+            # 2. 关联字段选择
+            self.select_link_field()
+            
+            # 3. 更新字段选择
+            self.select_update_fields()
+            
+            # 3.5. 输出目录设置
+            self.set_output_directory()
+            
+            # 3.6. 未匹配记录处理配置
+            self.configure_unmatched_handling()
+            
+            # 4. 执行同步
+            self.execute_sync()
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️  程序被用户中断")
+        except Exception as e:
+            print(f"\n❌ 程序执行出错: {str(e)}")
+    
+    def select_file_roles(self):
+        """文件角色选择"""
+        print(f"\n=== 步骤1: 文件角色选择 ===")
+        
+        # 选择文件夹
+        folder_path = input("请输入包含Excel文件的文件夹路径（或按回车使用默认目录G:\\wang\\excel）: ").strip()
+        if not folder_path:
+            folder_path = "G:\\wang\\excel"
+        
+        # 扫描Excel文件
+        excel_patterns = ['*.xlsx', '*.xls']
+        excel_files = []
+        
+        for pattern in excel_patterns:
+            excel_files.extend(glob.glob(os.path.join(folder_path, pattern)))
+        
+        if not excel_files:
+            print(f"❌ 在文件夹 '{folder_path}' 中没有找到Excel文件")
+            return
+        
+        # 显示文件列表
+        print(f"\n✅ 找到 {len(excel_files)} 个Excel文件:")
+        for i, file in enumerate(excel_files, 1):
+            filename = os.path.basename(file)
+            file_size = os.path.getsize(file) / 1024  # KB
+            print(f"{i:2d}. {filename:<30} ({file_size:.1f} KB)")
+        
+        # 选择源文件
+        print(f"\n📋 请选择源文件（提供数据的文件）:")
+        while True:
+            try:
+                source_choice = input("请输入源文件编号: ").strip()
+                source_index = int(source_choice) - 1
+                if 0 <= source_index < len(excel_files):
+                    self.source_file = excel_files[source_index]
+                    print(f"✅ 源文件: {os.path.basename(self.source_file)}")
+                    break
+                else:
+                    print("❌ 文件编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字")
+        
+        # 选择目标文件
+        print(f"\n📋 请选择目标文件（需要更新的文件）:")
+        while True:
+            try:
+                target_choice = input("请输入目标文件编号: ").strip()
+                target_index = int(target_choice) - 1
+                if 0 <= target_index < len(excel_files):
+                    if target_index == source_index:
+                        print("❌ 目标文件不能与源文件相同，请重新选择")
+                        continue
+                    self.target_file = excel_files[target_index]
+                    print(f"✅ 目标文件: {os.path.basename(self.target_file)}")
+                    break
+                else:
+                    print("❌ 文件编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字")
+    
+    def select_link_field(self):
+        """关联字段选择"""
+        print(f"\n=== 步骤2: 关联字段选择 ===")
+        
+        try:
+            # 读取源文件和目标文件
+            source_df = pd.read_excel(self.source_file)
+            target_df = pd.read_excel(self.target_file)
+            
+            # 获取两个文件的列名
+            source_columns = list(source_df.columns)
+            target_columns = list(target_df.columns)
+            
+            # 找出共有的字段
+            common_fields = list(set(source_columns) & set(target_columns))
+            
+            if not common_fields:
+                print("❌ 源文件和目标文件没有共同的字段，无法进行同步")
+                return
+            
+            print(f"📋 源文件和目标文件共有的字段:")
+            for i, field in enumerate(common_fields, 1):
+                print(f"{i:2d}. {field}")
+            
+            # 选择关联字段
+            print(f"\n🔗 请选择用于关联记录的字段（如ID、姓名等唯一标识字段）:")
+            while True:
+                try:
+                    link_choice = input("请输入关联字段编号: ").strip()
+                    link_index = int(link_choice) - 1
+                    if 0 <= link_index < len(common_fields):
+                        self.link_field = common_fields[link_index]
+                        print(f"✅ 关联字段: {self.link_field}")
+                        break
+                    else:
+                        print("❌ 字段编号超出范围，请重新选择")
+                except ValueError:
+                    print("❌ 请输入有效的数字")
+                    
+        except Exception as e:
+            print(f"❌ 读取文件时出错: {str(e)}")
+    
+    def set_output_directory(self):
+        """设置输出目录"""
+        print(f"\n=== 步骤3.5: 输出目录设置 ===")
+        
+        # 获取目标文件所在目录作为默认目录
+        default_dir = os.path.dirname(self.target_file)
+        print(f"📁 当前目标文件目录: {default_dir}")
+        
+        output_dir = input("请输入输出目录路径（或按回车使用目标文件所在目录）: ").strip()
+        if not output_dir:
+            output_dir = default_dir
+        
+        # 检查目录是否存在，如果不存在则创建
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+                print(f"✅ 已创建输出目录: {output_dir}")
+            except Exception as e:
+                print(f"❌ 创建目录失败: {str(e)}")
+                print(f"📁 使用默认目录: {default_dir}")
+                output_dir = default_dir
+        else:
+            print(f"✅ 输出目录: {output_dir}")
+        
+        self.output_directory = output_dir
+    
+    def configure_unmatched_handling(self):
+        """配置未匹配记录的处理方式"""
+        print(f"\n=== 步骤3.6: 未匹配记录处理配置 ===")
+        
+        print("🤔 对于匹配不上的记录，您希望如何处理？")
+        print("1. 设置为空值（保持原有数据不变）")
+        print("2. 使用默认值（为每个字段设置默认值）")
+        
+        while True:
+            choice = input("请选择处理方式 (1/2): ").strip()
+            if choice == "1":
+                self.unmatched_handling = "empty"
+                print("✅ 已选择：未匹配记录设置为空值")
+                break
+            elif choice == "2":
+                self.unmatched_handling = "default"
+                print("✅ 已选择：未匹配记录使用默认值")
+                self.set_default_values()
+                break
+            else:
+                print("❌ 无效选择，请输入 1 或 2")
+    
+    def set_default_values(self):
+        """为每个更新字段设置默认值"""
+        print(f"\n📝 请为每个更新字段设置默认值:")
+        
+        for field in self.update_fields:
+            while True:
+                default_value = input(f"请输入字段 '{field}' 的默认值: ").strip()
+                if default_value:
+                    self.default_values[field] = default_value
+                    print(f"✅ 字段 '{field}' 默认值设置为: {default_value}")
+                    break
+                else:
+                    print("❌ 默认值不能为空，请重新输入")
+    
+    def select_update_fields(self):
+        """更新字段选择"""
+        print(f"\n=== 步骤3: 更新字段选择 ===")
+        
+        try:
+            # 读取源文件和目标文件
+            source_df = pd.read_excel(self.source_file)
+            target_df = pd.read_excel(self.target_file)
+            
+            # 获取两个文件的列名
+            source_columns = list(source_df.columns)
+            target_columns = list(target_df.columns)
+            
+            # 显示源文件的所有字段供用户选择
+            print(f"📋 源文件中的所有字段:")
+            for i, field in enumerate(source_columns, 1):
+                # 标记哪些字段在目标文件中已存在
+                status = "（目标文件中已存在）" if field in target_columns else "（目标文件中不存在）"
+                print(f"{i:2d}. {field} {status}")
+            
+            # 选择更新字段
+            print(f"\n📝 请选择需要从源文件同步到目标文件的字段:")
+            print("💡 输入字段编号（用逗号分隔，如：1,2,3）")
+            print("💡 输入 'all' 选择所有字段")
+            print("💡 注意：如果字段在目标文件中已存在，将会覆盖原有数据")
+            
+            while True:
+                choice = input("请选择: ").strip().lower()
+                
+                if choice == 'all':
+                    self.update_fields = source_columns
+                    print(f"✅ 已选择所有 {len(source_columns)} 个字段")
+                    break
+                else:
+                    try:
+                        indices = [int(x.strip()) - 1 for x in choice.split(',')]
+                        selected_fields = [source_columns[i] for i in indices if 0 <= i < len(source_columns)]
+                        
+                        if not selected_fields:
+                            print("❌ 未选择任何有效字段，请重新选择")
+                            continue
+                        
+                        self.update_fields = selected_fields
+                        print(f"✅ 已选择 {len(selected_fields)} 个字段:")
+                        for field in selected_fields:
+                            status = "（将覆盖目标文件中的现有数据）" if field in target_columns else "（将添加到目标文件中）"
+                            print(f"  📋 {field} {status}")
+                        break
+                        
+                    except (ValueError, IndexError):
+                        print("❌ 输入格式错误，请重新选择")
+                        
+        except Exception as e:
+            print(f"❌ 读取文件时出错: {str(e)}")
+    
+    def execute_sync(self):
+        """执行同步操作"""
+        print(f"\n=== 步骤4: 执行同步 ===")
+        
+        try:
+            # 读取源文件和目标文件
+            source_df = pd.read_excel(self.source_file)
+            target_df = pd.read_excel(self.target_file)
+            
+            # 统计记录数
+            self.sync_stats['source_records'] = len(source_df)
+            self.sync_stats['target_records'] = len(target_df)
+            
+            print(f"📊 源文件记录数: {self.sync_stats['source_records']}")
+            print(f"📊 目标文件记录数: {self.sync_stats['target_records']}")
+            print(f"🔗 关联字段: {self.link_field}")
+            print(f"📝 更新字段: {', '.join(self.update_fields)}")
+            
+            # 确认执行
+            confirm = input(f"\n是否确认执行同步操作？(y/n): ").strip().lower()
+            if confirm not in ['y', 'yes', '是']:
+                print("❌ 用户取消操作")
+                return
+            
+            # 备份目标文件
+            self.backup_target_file()
+            
+            # 执行同步
+            updated_df = self.perform_sync(source_df, target_df)
+            
+            # 保存更新后的文件
+            self.save_updated_file(updated_df)
+            
+            # 显示同步结果
+            self.show_sync_results()
+            
+        except Exception as e:
+            print(f"❌ 同步执行出错: {str(e)}")
+    
+    def backup_target_file(self):
+        """备份目标文件"""
+        try:
+            # 创建备份目录
+            backup_dir = "backup"
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            
+            # 生成备份文件名
+            filename = os.path.basename(self.target_file)
+            name, ext = os.path.splitext(filename)
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"{name}_backup_{timestamp}{ext}"
+            backup_path = os.path.join(backup_dir, backup_filename)
+            
+            # 复制文件
+            import shutil
+            shutil.copy2(self.target_file, backup_path)
+            
+            print(f"✅ 已备份目标文件: {backup_filename}")
+            
+        except Exception as e:
+            print(f"⚠️  备份文件时出错: {str(e)}")
+    
+    def perform_sync(self, source_df: pd.DataFrame, target_df: pd.DataFrame) -> pd.DataFrame:
+        """执行同步操作"""
+        print(f"\n🔄 正在执行同步...")
+        
+        # 创建目标文件的副本
+        updated_df = target_df.copy()
+        
+        # 为每个更新字段添加新列（如果不存在）
+        added_fields = []
+        existing_fields = []
+        for field in self.update_fields:
+            if field not in updated_df.columns:
+                updated_df[field] = None
+                added_fields.append(field)
+            else:
+                existing_fields.append(field)
+        
+        if added_fields:
+            print(f"📝 将添加新字段到目标文件: {', '.join(added_fields)}")
+        if existing_fields:
+            print(f"📝 将覆盖目标文件中的现有字段: {', '.join(existing_fields)}")
+        
+        # 构建源文件的映射关系
+        source_mapping = {}
+        for _, row in source_df.iterrows():
+            link_value = str(row[self.link_field]).strip()
+            if link_value and link_value != 'nan':
+                source_mapping[link_value] = row
+        
+        print(f"📊 源文件映射关系数量: {len(source_mapping)}")
+        
+        # 更新目标文件
+        updated_count = 0
+        failed_count = 0
+        unmatched_count = 0
+        
+        for idx, row in updated_df.iterrows():
+            link_value = str(row[self.link_field]).strip()
+            
+            if link_value and link_value != 'nan' and link_value in source_mapping:
+                # 找到匹配的记录，更新字段
+                source_row = source_mapping[link_value]
+                for field in self.update_fields:
+                    try:
+                        # 处理数据类型转换，避免类型不匹配警告
+                        value = source_row[field]
+                        if pd.isna(value) or str(value).strip() == '':
+                            continue
+                        
+                        # 确保目标列是对象类型，以保持字符串格式
+                        if updated_df[field].dtype in ['int64', 'float64']:
+                            updated_df[field] = updated_df[field].astype('object')
+                        
+                        # 直接赋值，保持原始字符串格式
+                        updated_df.at[idx, field] = str(value)
+                    except Exception as e:
+                        print(f"⚠️  更新字段 {field} 时出错: {str(e)}")
+                        continue
+                updated_count += 1
+            else:
+                # 处理未匹配的记录
+                if self.unmatched_handling == "default":
+                    # 使用默认值
+                    for field in self.update_fields:
+                        try:
+                            # 确保目标列是对象类型
+                            if updated_df[field].dtype in ['int64', 'float64']:
+                                updated_df[field] = updated_df[field].astype('object')
+                            
+                            # 设置默认值
+                            default_value = self.default_values.get(field, "")
+                            updated_df.at[idx, field] = default_value
+                        except Exception as e:
+                            print(f"⚠️  设置字段 {field} 默认值时出错: {str(e)}")
+                            continue
+                    unmatched_count += 1
+                else:
+                    # 设置为空值（保持原有数据不变）
+                    failed_count += 1
+        
+        # 更新统计信息
+        self.sync_stats['updated_records'] = updated_count
+        self.sync_stats['failed_records'] = failed_count
+        self.sync_stats['unmatched_records'] = unmatched_count
+        
+        if self.sync_stats['target_records'] > 0:
+            self.sync_stats['sync_success_rate'] = (updated_count / self.sync_stats['target_records']) * 100
+        
+        print(f"✅ 同步完成:")
+        print(f"  更新记录: {updated_count} 个")
+        print(f"  未匹配记录: {unmatched_count} 个")
+        print(f"  失败记录: {failed_count} 个")
+        print(f"  成功率: {self.sync_stats['sync_success_rate']:.1f}%")
+        
+        return updated_df
+    
+    def save_updated_file(self, updated_df: pd.DataFrame):
+        """保存更新后的文件"""
+        try:
+            # 检查文件是否被占用
+            if os.path.exists(self.target_file):
+                try:
+                    # 尝试以写入模式打开文件，检查是否被占用
+                    with open(self.target_file, 'r+b') as f:
+                        pass
+                except PermissionError:
+                    print(f"❌ 目标文件被其他程序占用，无法保存")
+                    print("请关闭Excel或其他可能打开该文件的程序，然后重试")
+                    
+                    # 询问是否保存到新文件
+                    save_as_new = input("是否保存到新文件？(y/n): ").strip().lower()
+                    if save_as_new in ['y', 'yes', '是']:
+                        # 生成新文件名
+                        filename = os.path.basename(self.target_file)
+                        name, ext = os.path.splitext(filename)
+                        timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                        new_filename = f"{name}_updated_{timestamp}{ext}"
+                        new_path = os.path.join(self.output_directory, new_filename)
+                        
+                        with pd.ExcelWriter(new_path, engine='openpyxl') as writer:
+                            updated_df.to_excel(writer, index=False)
+                        
+                        print(f"✅ 已保存到新文件: {new_filename}")
+                        return
+                    else:
+                        print("❌ 用户取消保存")
+                        return
+            
+            # 保存到原文件
+            with pd.ExcelWriter(self.target_file, engine='openpyxl') as writer:
+                updated_df.to_excel(writer, index=False)
+            
+            print(f"✅ 目标文件已更新: {os.path.basename(self.target_file)}")
+            
+        except PermissionError:
+            print(f"❌ 无法保存文件，文件可能被其他程序占用")
+            print("自动保存到新文件...")
+            
+            # 生成新文件名
+            filename = os.path.basename(self.target_file)
+            name, ext = os.path.splitext(filename)
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            new_filename = f"{name}_updated_{timestamp}{ext}"
+            new_path = os.path.join(self.output_directory, new_filename)
+            
+            try:
+                with pd.ExcelWriter(new_path, engine='openpyxl') as writer:
+                    updated_df.to_excel(writer, index=False)
+                
+                print(f"✅ 已保存到新文件: {new_filename}")
+                # 更新目标文件路径为新的文件路径
+                self.target_file = new_path
+            except Exception as e2:
+                print(f"❌ 保存到新文件也失败: {str(e2)}")
+        except Exception as e:
+            print(f"❌ 保存文件时出错: {str(e)}")
+            print("尝试保存到新文件...")
+            
+            try:
+                # 生成新文件名
+                filename = os.path.basename(self.target_file)
+                name, ext = os.path.splitext(filename)
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                new_filename = f"{name}_updated_{timestamp}{ext}"
+                new_path = os.path.join(self.output_directory, new_filename)
+                
+                with pd.ExcelWriter(new_path, engine='openpyxl') as writer:
+                    updated_df.to_excel(writer, index=False)
+                
+                print(f"✅ 已保存到新文件: {new_filename}")
+            except Exception as e2:
+                print(f"❌ 保存到新文件也失败: {str(e2)}")
+    
+    def show_sync_results(self):
+        """显示同步结果"""
+        print(f"\n" + "=" * 60)
+        print("🎉 同步处理完成！")
+        print("=" * 60)
+        print(f"📊 同步统计信息：")
+        print(f"源文件: {os.path.basename(self.source_file)}")
+        print(f"目标文件: {os.path.basename(self.target_file)}")
+        print(f"源文件记录数: {self.sync_stats['source_records']} 个")
+        print(f"目标文件记录数: {self.sync_stats['target_records']} 个")
+        print(f"成功更新记录: {self.sync_stats['updated_records']} 个")
+        print(f"未匹配记录: {self.sync_stats.get('unmatched_records', 0)} 个")
+        print(f"失败记录: {self.sync_stats['failed_records']} 个")
+        print(f"同步成功率: {self.sync_stats['sync_success_rate']:.1f}%")
+        print(f"关联字段: {self.link_field}")
+        print(f"更新字段: {', '.join(self.update_fields)}")
+        print(f"处理时间: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 移除同步报告保存
+        # self.save_sync_report()
+    
+    def save_sync_report(self):
+        """保存同步报告"""
+        try:
+            # 生成报告文件名
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            report_filename = f"同步处理报告_{timestamp}.xlsx"
+            
+            # 创建报告数据
+            report_data = {
+                '统计项目': [
+                    '源文件',
+                    '目标文件',
+                    '源文件记录数',
+                    '目标文件记录数',
+                    '成功更新记录',
+                    '失败记录',
+                    '同步成功率',
+                    '关联字段',
+                    '更新字段',
+                    '处理时间'
+                ],
+                '数值': [
+                    os.path.basename(self.source_file),
+                    os.path.basename(self.target_file),
+                    f"{self.sync_stats['source_records']} 个",
+                    f"{self.sync_stats['target_records']} 个",
+                    f"{self.sync_stats['updated_records']} 个",
+                    f"{self.sync_stats['failed_records']} 个",
+                    f"{self.sync_stats['sync_success_rate']:.1f}%",
+                    self.link_field,
+                    ', '.join(self.update_fields),
+                    pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                ]
+            }
+            
+            # 保存到Excel文件
+            report_df = pd.DataFrame(report_data)
+            report_df.to_excel(report_filename, index=False)
+            
+            # 移除同步报告输出信息
+            # print(f"📄 同步报告已保存到: {report_filename}")
+            
+        except Exception as e:
+            print(f"⚠️  保存同步报告时出错: {str(e)}")
 
 def main():
     """主函数"""
