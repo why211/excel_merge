@@ -170,6 +170,46 @@
 pip install pandas openpyxl
 ```
 
+## 🧳 打包为 Windows 可执行文件（.exe）
+
+-   环境要求：已安装 Python 3.9+、pip、PyInstaller（`pip install pyinstaller`）
+-   打包命令（已验证）：
+
+```bash
+pyinstaller --name "Excel工具集" --onefile --noconsole --add-data "excel_merger.py;." --add-data "excel_processor.py;." excel_tool.py
+```
+
+-   产物路径：`dist/Excel工具集.exe`
+-   运行方式：双击或命令行执行（首次运行请关闭被占用的目标 xlsx）。
+
+### 打包注意事项
+
+-   若报告缺少模块，先 `pip install pandas openpyxl`。
+-   若提示目标文件被占用，请关闭 Excel 再次执行。
+-   若需控制台窗口，去掉 `--noconsole`。
+
+## 📚 工作流程（同步与多源同步）
+
+1. 启动程序：`Excel工具集.exe`
+2. 主菜单选择：1 合并，或 2 同步
+3. 同步：
+    - 选择单源或多源
+    - 选择源文件与目标文件
+    - 关联字段仅提示不自动决策（如建议选择“教工号”）
+    - 更新字段需手动确认或选择 all
+    - 冲突策略：询问/第一个/最后一个/跳过
+    - 输出目录与执行
+4. 合并：
+    - 选择文件夹与文件
+    - 智能列名映射（精确/变体/模糊），必要时询问确认
+    - 可选去重、字段补充
+    - 导出包含 合并数据/处理统计/字段信息 三个工作表
+
+### 已知改进点
+
+-   控制台 emoji 在部分中文系统可能显示为方框，已替换为 ASCII 提示。
+-   单源/多源同步均支持列名变体匹配与默认值填充。
+
 ## 🚀 使用方法
 
 ### 基本使用

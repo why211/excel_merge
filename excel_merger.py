@@ -4,7 +4,6 @@ import glob
 import re
 from typing import List, Tuple, Dict, Optional
 from difflib import SequenceMatcher
-from difflib import SequenceMatcher
 
 class ExcelProcessor:
     """Excel文件处理工具"""
@@ -29,26 +28,11 @@ class ExcelProcessor:
         self.similarity_threshold = 0.8  # 相似度阈值
         self.auto_clean_columns = True  # 是否自动清理列名
         
-        # 常见列名变体映射
+        # 常见列名变体映射（去重）
         self.common_column_variants = {
             '学号': ['学号', '学号号', '学学号', 'xuehao', 'student_id', '学生编号', '学生学号'],
             '学生姓名': ['学生姓名', '学生姓名名', '学学生姓名', 'student_name', '姓名', '学生名', '学生姓名（中文）'],
-            '班级': ['班级', '班', 'class', '班级名称'],
-            '成绩': ['成绩', '分数', 'score', 'grade', '考试分数'],
-            '课程': ['课程', '科目', 'course', 'subject', '课程名称']
-        }
-        
-        # 新增：智能列名匹配相关属性
-        self.column_mapping = {}  # 列名映射关系
-        self.enable_smart_matching = True  # 是否启用智能匹配
-        self.similarity_threshold = 0.8  # 相似度阈值
-        self.auto_clean_columns = True  # 是否自动清理列名
-        
-        # 常见列名变体映射
-        self.common_column_variants = {
-            '学号': ['学号', '学号号', '学学号', 'xuehao', 'student_id', '学生编号', '学生学号'],
-            '学生姓名': ['学生姓名', '学生姓名名', '学学生姓名', 'student_name', '姓名', '学生名', '学生姓名（中文）'],
-            '班级': ['班级', '班', 'class', '班级名称'],
+            '班级': ['班级', '班', 'class', '班级名称', 'class_name'],
             '成绩': ['成绩', '分数', 'score', 'grade', '考试分数'],
             '课程': ['课程', '科目', 'course', 'subject', '课程名称']
         }
@@ -275,8 +259,8 @@ class ExcelProcessor:
         
         # 用户选择文件
         print(f"\n请选择要处理的文件:")
-        print("�� 输入文件编号（用逗号分隔，如：1,2,3）")
-        print("�� 输入 'all' 选择所有文件")
+        print("- 输入文件编号（用逗号分隔，如：1,2,3）")
+        print("- 输入 'all' 选择所有文件")
         print("📝 输入 'q' 退出程序")
         
         try:
@@ -1363,7 +1347,7 @@ class ExcelProcessor:
             print(f"✅ 去重完成:")
             print(f"  📊 去重前行数: {before_count}")
             print(f"  📊 去重后行数: {after_count}")
-            print(f"  ��️  删除重复记录: {removed_count}")
+            print(f"  删除重复记录: {removed_count}")
             
             if removed_count > 0:
                 print(f"  📈 去重率: {removed_count/before_count*100:.1f}%")
@@ -1483,7 +1467,7 @@ class ExcelProcessor:
                 field_df.to_excel(writer, sheet_name='字段信息', index=False)
             
             print(f"✅ 数据已成功导出到: {output_path}")
-            print(f"�� 总共导出 {len(df)} 条记录")
+            print(f"总共导出 {len(df)} 条记录")
             print(f"📋 包含工作表: 合并数据、处理统计、字段信息")
             
             return output_path

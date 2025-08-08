@@ -35,7 +35,7 @@ class ExcelProcessor:
         self.operation_mode = "merge"  # "merge" or "sync"
         self.source_file = ""  # 源文件路径变量
         self.target_file = ""  # 目标文件路径变量
-        self.link_field = ""  # 关联字段变量
+        # 保持有意义的默认关联字段，避免覆盖为空
         self.update_fields = []  # 更新字段列表变量
         self.output_directory = ""  # 输出目录变量
         self.unmatched_handling = "empty"  # 未匹配记录处理方式: "empty" 或 "default"
@@ -95,8 +95,8 @@ class ExcelProcessor:
         
         # 用户选择文件
         print(f"\n请选择要处理的文件:")
-        print("�� 输入文件编号（用逗号分隔，如：1,2,3）")
-        print("�� 输入 'all' 选择所有文件")
+        print("- 输入文件编号（用逗号分隔，如：1,2,3）")
+        print("- 输入 'all' 选择所有文件")
         print("📝 输入 'q' 退出程序")
         
         try:
@@ -477,9 +477,9 @@ class ExcelProcessor:
                 print(f"{i + 1:2d}. {field:<25} (出现在 {occurrence_count} 个文件中)")
         
         print(f"\n请选择要导入的字段:")
-        print("�� 输入字段编号（用逗号分隔，如：1,2,3）")
-        print("�� 输入 'all' 选择所有字段")
-        print("�� 输入 'page 1' 查看第1页（可替换页码）")
+        print("- 输入字段编号（用逗号分隔，如：1,2,3）")
+        print("- 输入 'all' 选择所有字段")
+        print("- 输入 'page 1' 查看第1页（可替换页码）")
         
         try:
             choice = input("\n请选择: ").strip().lower()
@@ -551,9 +551,9 @@ class ExcelProcessor:
             occurrence_count = sum(1 for f in self.selected_files if field in self.get_file_fields(f))
             print(f"{i:2d}. {field:<25} (出现在 {occurrence_count} 个文件中)")
         
-        print(f"\n�� 输入字段编号（用逗号分隔，如：1,2）")
-        print(f"📝 输入 'all' 使用所有选中字段进行去重")
-        print(f"�� 输入 'single 1' 只使用第1个字段去重")
+        print(f"\n- 输入字段编号（用逗号分隔，如：1,2）")
+        print(f"- 输入 'all' 使用所有选中字段进行去重")
+        print(f"- 输入 'single 1' 只使用第1个字段去重")
         
         try:
             choice = input("\n请选择去重字段: ").strip().lower()
@@ -720,7 +720,7 @@ class ExcelProcessor:
             print(f"✅ 去重完成:")
             print(f"  📊 去重前行数: {before_count}")
             print(f"  📊 去重后行数: {after_count}")
-            print(f"  ��️  删除重复记录: {removed_count}")
+            print(f"  删除重复记录: {removed_count}")
             
             if removed_count > 0:
                 print(f"  📈 去重率: {removed_count/before_count*100:.1f}%")
@@ -840,7 +840,7 @@ class ExcelProcessor:
                 field_df.to_excel(writer, sheet_name='字段信息', index=False)
             
             print(f"✅ 数据已成功导出到: {output_path}")
-            print(f"�� 总共导出 {len(df)} 条记录")
+            print(f"总共导出 {len(df)} 条记录")
             print(f"📋 包含工作表: 合并数据、处理统计、字段信息")
             
             return output_path
@@ -1378,15 +1378,31 @@ class ExcelProcessor:
         # 创建目标文件的副本
         updated_df = target_df.copy()
         
-        # 为每个更新字段添加新列（如果不存在）
+        # 解析关联字段的实际名称
+        actual_link_field = self.find_actual_field_name(updated_df, self.link_field) if hasattr(self, 'find_actual_field_name') else self.link_field
+        if not actual_link_field or actual_link_field not in updated_df.columns:
+            # 回退为原字段名尝试
+            actual_link_field = self.link_field
+            if actual_link_field not in updated_df.columns:
+                print(f"⚠️  目标文件缺少关联字段 '{self.link_field}'，同步将仅尝试创建更新列")
+        
+        # 为每个更新字段添加新列（如果不存在），并解析目标/源的实际列名
         added_fields = []
         existing_fields = []
+        update_pairs = []  # (target_field_in_df, source_field_in_source_df)
         for field in self.update_fields:
-            if field not in updated_df.columns:
-                updated_df[field] = None
-                added_fields.append(field)
+            actual_target_field = self.find_actual_field_name(updated_df, field) if hasattr(self, 'find_actual_field_name') else field
+            if actual_target_field and actual_target_field in updated_df.columns:
+                existing_fields.append(actual_target_field)
             else:
-                existing_fields.append(field)
+                # 目标中不存在则创建以目标命名
+                actual_target_field = field
+                updated_df[actual_target_field] = None
+                added_fields.append(actual_target_field)
+
+            # 源字段解析（基于原始更新字段名寻址源列变体）
+            actual_source_field = self.find_actual_field_name(source_df, field) if hasattr(self, 'find_actual_field_name') else field
+            update_pairs.append((actual_target_field, actual_source_field))
         
         if added_fields:
             print(f"📝 将添加新字段到目标文件: {', '.join(added_fields)}")
@@ -1395,8 +1411,13 @@ class ExcelProcessor:
         
         # 构建源文件的映射关系
         source_mapping = {}
+        # 解析源文件关联字段
+        actual_source_link_field = self.find_actual_field_name(source_df, self.link_field) if hasattr(self, 'find_actual_field_name') else self.link_field
+        if not actual_source_link_field or actual_source_link_field not in source_df.columns:
+            actual_source_link_field = self.link_field
+
         for _, row in source_df.iterrows():
-            link_value = str(row[self.link_field]).strip()
+            link_value = str(row.get(actual_source_link_field, '')).strip()
             if link_value and link_value != 'nan':
                 source_mapping[link_value] = row
         
@@ -1408,43 +1429,43 @@ class ExcelProcessor:
         unmatched_count = 0
         
         for idx, row in updated_df.iterrows():
-            link_value = str(row[self.link_field]).strip()
+            link_value = str(row.get(actual_link_field, '')).strip()
             
             if link_value and link_value != 'nan' and link_value in source_mapping:
                 # 找到匹配的记录，更新字段
                 source_row = source_mapping[link_value]
-                for field in self.update_fields:
+                for target_field, source_field in update_pairs:
                     try:
                         # 处理数据类型转换，避免类型不匹配警告
-                        value = source_row[field]
+                        value = source_row.get(source_field)
                         if pd.isna(value) or str(value).strip() == '':
                             continue
                         
                         # 确保目标列是对象类型，以保持字符串格式
-                        if updated_df[field].dtype in ['int64', 'float64']:
-                            updated_df[field] = updated_df[field].astype('object')
+                        if updated_df[target_field].dtype in ['int64', 'float64']:
+                            updated_df[target_field] = updated_df[target_field].astype('object')
                         
                         # 直接赋值，保持原始字符串格式
-                        updated_df.at[idx, field] = str(value)
+                        updated_df.at[idx, target_field] = str(value)
                     except Exception as e:
-                        print(f"⚠️  更新字段 {field} 时出错: {str(e)}")
+                        print(f"⚠️  更新字段 {target_field} 时出错: {str(e)}")
                         continue
                 updated_count += 1
             else:
                 # 处理未匹配的记录
                 if self.unmatched_handling == "default":
                     # 使用默认值
-                    for field in self.update_fields:
+                    for target_field, _ in update_pairs:
                         try:
                             # 确保目标列是对象类型
-                            if updated_df[field].dtype in ['int64', 'float64']:
-                                updated_df[field] = updated_df[field].astype('object')
+                            if updated_df[target_field].dtype in ['int64', 'float64']:
+                                updated_df[target_field] = updated_df[target_field].astype('object')
                             
                             # 设置默认值
-                            default_value = self.default_values.get(field, "")
-                            updated_df.at[idx, field] = default_value
+                            default_value = self.default_values.get(target_field, "")
+                            updated_df.at[idx, target_field] = default_value
                         except Exception as e:
-                            print(f"⚠️  设置字段 {field} 默认值时出错: {str(e)}")
+                            print(f"⚠️  设置字段 {target_field} 默认值时出错: {str(e)}")
                             continue
                     unmatched_count += 1
                 else:
@@ -1456,8 +1477,9 @@ class ExcelProcessor:
         self.sync_stats['failed_records'] = failed_count
         self.sync_stats['unmatched_records'] = unmatched_count
         
-        if self.sync_stats['target_records'] > 0:
-            self.sync_stats['sync_success_rate'] = (updated_count / self.sync_stats['target_records']) * 100
+        target_denominator = self.sync_stats.get('target_records', 0) or len(updated_df)
+        if target_denominator > 0:
+            self.sync_stats['sync_success_rate'] = (updated_count / target_denominator) * 100
         
         print(f"✅ 同步完成:")
         print(f"  更新记录: {updated_count} 个")
