@@ -1,0 +1,94 @@
+# Excel文件处理工具开发提示词
+
+## 任务要求
+开发一个Excel文件处理工具，满足以下核心需求：
+
+### 1. 基本功能
+- 无需分析字段结构，直接处理Excel文件
+- 支持读取多个Excel文件（.xls, .xlsx格式）
+- 将选定的字段数据导入到目标Excel文件
+
+### 2. 字段选择功能
+- 允许用户选择多个字段进行导入
+- 提供字段列表展示功能
+- 支持跨文件的字段映射
+
+### 3. 去重功能
+- 首先询问用户是否需要去重
+- 如果选择去重，则允许用户选择去重的字段（可多选）
+- 实现基于选定字段的数据去重逻辑
+
+### 4. 用户交互流程
+1. 文件选择：选择要处理的Excel文件
+2. 字段展示：显示所有可用字段
+3. 字段选择：用户选择要导入的字段
+4. 去重选项：询问是否需要去重
+5. 去重字段选择：如果去重，选择去重字段
+6. 目标文件设置：设置输出文件名
+7. 数据处理：执行合并和去重操作
+8. 结果输出：生成目标Excel文件
+
+## 技术实现要求
+
+### 核心函数结构
+```python
+def select_files() -> List[str]:
+    """文件选择功能"""
+    pass
+
+def get_field_list(files: List[str]) -> List[str]:
+    """获取所有文件的字段列表"""
+    pass
+
+def select_fields(all_fields: List[str]) -> List[str]:
+    """字段选择功能"""
+    pass
+
+def configure_deduplication() -> Tuple[bool, List[str]]:
+    """去重配置：返回(是否去重, 去重字段列表)"""
+    pass
+
+def process_data(files: List[str], selected_fields: List[str], 
+                deduplicate: bool, dedup_fields: List[str]) -> pd.DataFrame:
+    """数据处理主函数"""
+    pass
+
+def export_to_excel(df: pd.DataFrame, output_filename: str):
+    """导出到Excel"""
+    pass
+
+def main():
+    """主程序入口"""
+    pass
+```
+
+### 执行流程
+
+## 具体要求
+
+### 用户交互设计
+- 使用简单的命令行界面
+- 提供清晰的选项提示
+- 支持默认值设置
+- 包含错误处理机制
+
+### 数据处理逻辑
+- 使用pandas进行Excel操作
+- 支持多文件数据合并
+- 实现灵活的字段选择
+- 提供可配置的去重功能
+
+### 输出要求
+- 生成完整的Python代码
+- 包含必要的依赖说明（requirements.txt）
+- 提供使用示例
+- 包含详细的错误处理
+- 添加中文注释说明
+
+### 可选增强功能
+- 数据预览功能
+- 处理进度显示
+- 配置文件保存/加载
+- 日志记录功能
+
+请根据以上要求开发一个完整的Excel文件处理工具，确保代码结构清晰、功能完整、易于使用。

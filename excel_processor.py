@@ -48,6 +48,20 @@ class ExcelProcessor:
             'sync_success_rate': 0.0
         }
     
+    def calculate_similarity(self, str1: str, str2: str) -> float:
+        """
+        计算两个字符串的相似度
+        
+        Args:
+            str1: 字符串1
+            str2: 字符串2
+            
+        Returns:
+            相似度 (0-1)
+        """
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+    
     def select_files(self, folder_path: str = ".") -> List[str]:
         """
         文件选择功能
@@ -860,8 +874,8 @@ class ExcelProcessor:
     def run(self):
         """运行主程序"""
         print("=" * 60)
-        print("🎯 Excel文件处理工具 v2.2")
-        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充、数据同步")
+        print("🎯 Excel文件处理工具 v2.4")
+        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充、单源同步、多源同步")
         print("=" * 60)
         
         # 选择操作模式
@@ -871,6 +885,25 @@ class ExcelProcessor:
             self.run_merge_mode()
         elif mode == "sync":
             self.run_sync_mode()
+        elif mode == "multi_sync":
+            self.run_multi_sync_mode()
+        else:
+            print("👋 程序退出")
+    
+    def run_sync_only(self):
+        """运行同步功能（专门用于excel_tool.py调用）"""
+        print("=" * 60)
+        print("🎯 Excel数据同步工具")
+        print("📋 功能：将一个或者多个Excel文件的数据同步到另一个文件")
+        print("=" * 60)
+        
+        # 选择同步模式
+        mode = self.select_sync_mode()
+        
+        if mode == "sync":
+            self.run_sync_mode()
+        elif mode == "multi_sync":
+            self.run_multi_sync_mode()
         else:
             print("👋 程序退出")
     
@@ -879,11 +912,13 @@ class ExcelProcessor:
         选择操作模式
         
         Returns:
-            str: 操作模式 ("merge" 或 "sync")
+            str: 操作模式 ("merge", "sync", 或 "multi_sync")
         """
         print("\n请选择操作模式：")
         print("1. 合并到空Excel（创建新的合并文件）")
         print("2. 同步到有数据的Excel（更新现有文件）")
+        print("   - 2.1 源文件到目标文件（单个源文件同步）")
+        print("   - 2.2 多个源文件到目标文件（多个源文件同步）")
         
         while True:
             choice = input("\n请选择 (1/2): ").strip()
@@ -891,8 +926,43 @@ class ExcelProcessor:
                 print("✅ 已选择：合并模式")
                 return "merge"
             elif choice == "2":
-                print("✅ 已选择：同步模式")
+                # 进一步选择同步模式
+                print("\n请选择同步模式：")
+                print("1. 源文件到目标文件（单个源文件同步）")
+                print("2. 多个源文件到目标文件（多个源文件同步）")
+                
+                sync_choice = input("\n请选择 (1/2): ").strip()
+                if sync_choice == "1":
+                    print("✅ 已选择：单源同步模式")
+                    return "sync"
+                elif sync_choice == "2":
+                    print("✅ 已选择：多源同步模式")
+                    return "multi_sync"
+                else:
+                    print("❌ 无效选择，请输入 1 或 2")
+                    continue
+            else:
+                print("❌ 无效选择，请输入 1 或 2")
+    
+    def select_sync_mode(self) -> str:
+        """
+        选择同步模式（专门用于同步功能）
+        
+        Returns:
+            str: 同步模式 ("sync" 或 "multi_sync")
+        """
+        print("\n请选择同步模式：")
+        print("1. 源文件到目标文件（单个源文件同步）")
+        print("2. 多个源文件到目标文件（多个源文件同步）")
+        
+        while True:
+            choice = input("\n请选择 (1/2): ").strip()
+            if choice == "1":
+                print("✅ 已选择：单源同步模式")
                 return "sync"
+            elif choice == "2":
+                print("✅ 已选择：多源同步模式")
+                return "multi_sync"
             else:
                 print("❌ 无效选择，请输入 1 或 2")
     
@@ -1933,6 +2003,605 @@ class ExcelProcessor:
                         return map_value
         
         return None
+
+    def run_multi_sync_mode(self):
+        """运行多源同步模式"""
+        print("\n🔄 启动多源同步模式...")
+        
+        try:
+            # 1. 文件选择
+            self.select_multi_sync_files()
+            
+            # 2. 关联字段选择
+            self.select_multi_sync_link_field()
+            
+            # 3. 更新字段选择
+            self.select_multi_sync_update_fields()
+            
+            # 4. 冲突处理配置
+            self.configure_conflict_handling()
+            
+            # 5. 输出设置
+            self.set_multi_sync_output()
+            
+            # 6. 执行多源同步
+            self.execute_multi_sync()
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️  程序被用户中断")
+        except Exception as e:
+            print(f"\n❌ 程序执行出错: {str(e)}")
+    
+    def select_multi_sync_files(self):
+        """多源同步文件选择"""
+        print(f"\n=== 步骤1: 多源同步文件选择 ===")
+        
+        # 选择文件夹
+        folder_path = input("请输入包含Excel文件的文件夹路径（或按回车使用默认目录G:\\wang\\excel）: ").strip()
+        if not folder_path:
+            folder_path = "G:\\wang\\excel"
+        
+        # 扫描Excel文件
+        excel_patterns = ['*.xlsx', '*.xls']
+        excel_files = []
+        
+        for pattern in excel_patterns:
+            excel_files.extend(glob.glob(os.path.join(folder_path, pattern)))
+        
+        if not excel_files:
+            print(f"❌ 在文件夹 '{folder_path}' 中没有找到Excel文件")
+            return
+        
+        # 显示文件列表
+        print(f"\n✅ 找到 {len(excel_files)} 个Excel文件:")
+        for i, file in enumerate(excel_files, 1):
+            filename = os.path.basename(file)
+            file_size = os.path.getsize(file) / 1024  # KB
+            print(f"{i:2d}. {filename:<30} ({file_size:.1f} KB)")
+        
+        # 选择源文件（多个）
+        print(f"\n📋 请选择源文件（提供数据的文件，可多选）:")
+        print("📝 输入文件编号，用逗号分隔（如：1,2,3）")
+        print("📝 输入 'all' 选择所有文件作为源文件")
+        
+        while True:
+            try:
+                source_choice = input("请输入源文件编号: ").strip()
+                if source_choice.lower() == 'all':
+                    self.source_files = excel_files
+                    print(f"✅ 已选择所有 {len(excel_files)} 个文件作为源文件")
+                    break
+                else:
+                    source_indices = [int(x.strip()) - 1 for x in source_choice.split(',')]
+                    self.source_files = [excel_files[i] for i in source_indices if 0 <= i < len(excel_files)]
+                    
+                    if not self.source_files:
+                        print("❌ 未选择任何有效文件，请重新选择")
+                        continue
+                    
+                    print(f"✅ 已选择 {len(self.source_files)} 个源文件:")
+                    for file in self.source_files:
+                        print(f"  📄 {os.path.basename(file)}")
+                    break
+            except ValueError:
+                print("❌ 请输入有效的数字")
+        
+        # 选择目标文件
+        print(f"\n📋 请选择目标文件（需要更新的文件）:")
+        while True:
+            try:
+                target_choice = input("请输入目标文件编号: ").strip()
+                target_index = int(target_choice) - 1
+                if 0 <= target_index < len(excel_files):
+                    self.target_file = excel_files[target_index]
+                    print(f"✅ 目标文件: {os.path.basename(self.target_file)}")
+                    break
+                else:
+                    print("❌ 文件编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字")
+    
+    def select_multi_sync_link_field(self):
+        """多源同步关联字段选择"""
+        print(f"\n=== 步骤2: 关联字段选择 ===")
+        
+        try:
+            # 读取目标文件
+            target_df = pd.read_excel(self.target_file)
+            target_columns = list(target_df.columns)
+            
+            # 读取所有源文件，找出共同的字段
+            all_source_columns = set()
+            for source_file in self.source_files:
+                source_df = pd.read_excel(source_file)
+                all_source_columns.update(source_df.columns)
+            
+            # 找出目标文件和所有源文件共有的字段
+            common_fields = list(set(target_columns) & all_source_columns)
+            
+            if not common_fields:
+                print("❌ 目标文件和源文件没有共同的字段，无法进行同步")
+                return
+            
+            # 智能检测关联字段
+            print(f"🔍 智能检测关联字段...")
+            
+            # 优先选择常见的关键字段
+            priority_fields = ['学号', '教工号', '工号', '编号', 'ID', 'id', 'student_id', 'teacher_id']
+            detected_field = None
+            
+            for priority_field in priority_fields:
+                for field in common_fields:
+                    if priority_field in field or field in priority_field:
+                        detected_field = field
+                        break
+                if detected_field:
+                    break
+            
+            # 检测源文件之间的字段模糊匹配
+            print(f"🔍 检测源文件字段匹配情况...")
+            source_files_data = {}
+            for source_file in self.source_files:
+                source_df = pd.read_excel(source_file)
+                source_files_data[os.path.basename(source_file)] = list(source_df.columns)
+            
+            # 检查字段模糊匹配
+            fuzzy_matches = []
+            for i, file1 in enumerate(self.source_files):
+                for j, file2 in enumerate(self.source_files):
+                    if i < j:  # 避免重复检查
+                        file1_name = os.path.basename(file1)
+                        file2_name = os.path.basename(file2)
+                        file1_fields = source_files_data[file1_name]
+                        file2_fields = source_files_data[file2_name]
+                        
+                        # 检查字段模糊匹配
+                        for field1 in file1_fields:
+                            for field2 in file2_fields:
+                                if field1 != field2 and self.calculate_similarity(field1, field2) >= 0.8:
+                                    fuzzy_matches.append({
+                                        'file1': file1_name,
+                                        'file2': file2_name,
+                                        'field1': field1,
+                                        'field2': field2,
+                                        'similarity': self.calculate_similarity(field1, field2)
+                                    })
+            
+            # 显示模糊匹配结果
+            if fuzzy_matches:
+                print(f"💡 发现 {len(fuzzy_matches)} 个字段模糊匹配:")
+                for match in fuzzy_matches:
+                    print(f"  📋 {match['file1']} 的 '{match['field1']}' 与 {match['file2']} 的 '{match['field2']}' 相似度: {match['similarity']:.2f}")
+                print(f"💡 这些字段可能表示相同的数据，建议检查字段映射")
+            else:
+                print(f"✅ 未发现明显的字段模糊匹配")
+            
+            # 显示检测建议
+            if detected_field:
+                print(f"💡 建议选择关联字段: {detected_field}")
+            else:
+                print(f"💡 未检测到明显的关联字段，请手动选择")
+            
+            # 显示所有可选字段
+            print(f"📋 目标文件和源文件共有的字段:")
+            for i, field in enumerate(common_fields, 1):
+                if detected_field and field == detected_field:
+                    print(f"{i:2d}. {field} (推荐)")
+                else:
+                    print(f"{i:2d}. {field}")
+            
+            # 让用户选择
+            print(f"\n📝 请选择用于匹配的关联字段:")
+            while True:
+                try:
+                    link_choice = input("请输入关联字段编号: ").strip()
+                    link_index = int(link_choice) - 1
+                    if 0 <= link_index < len(common_fields):
+                        self.link_field = common_fields[link_index]
+                        print(f"✅ 关联字段: {self.link_field}")
+                        break
+                    else:
+                        print("❌ 字段编号超出范围，请重新选择")
+                except ValueError:
+                    print("❌ 请输入有效的数字")
+                    
+        except Exception as e:
+            print(f"❌ 读取文件时出错: {str(e)}")
+    
+    def select_multi_sync_update_fields(self):
+        """多源同步更新字段选择"""
+        print(f"\n=== 步骤3: 更新字段选择 ===")
+        
+        try:
+            # 读取目标文件
+            target_df = pd.read_excel(self.target_file)
+            target_columns = list(target_df.columns)
+            
+            # 读取所有源文件，找出可更新的字段
+            all_source_columns = set()
+            for source_file in self.source_files:
+                source_df = pd.read_excel(source_file)
+                all_source_columns.update(source_df.columns)
+            
+            # 找出目标文件中存在且源文件中也存在的字段（排除关联字段）
+            updateable_fields = [field for field in target_columns 
+                               if field in all_source_columns and field != self.link_field]
+            
+            if not updateable_fields:
+                print("❌ 没有可更新的字段")
+                return
+            
+            # 智能检测更新字段
+            print(f"🔍 智能检测可更新字段...")
+            
+            # 检测源文件之间的字段模糊匹配
+            print(f"🔍 检测源文件字段匹配情况...")
+            source_files_data = {}
+            for source_file in self.source_files:
+                source_df = pd.read_excel(source_file)
+                source_files_data[os.path.basename(source_file)] = list(source_df.columns)
+            
+            # 检查字段模糊匹配
+            fuzzy_matches = []
+            for i, file1 in enumerate(self.source_files):
+                for j, file2 in enumerate(self.source_files):
+                    if i < j:  # 避免重复检查
+                        file1_name = os.path.basename(file1)
+                        file2_name = os.path.basename(file2)
+                        file1_fields = source_files_data[file1_name]
+                        file2_fields = source_files_data[file2_name]
+                        
+                        # 检查字段模糊匹配
+                        for field1 in file1_fields:
+                            for field2 in file2_fields:
+                                if field1 != field2 and self.calculate_similarity(field1, field2) >= 0.8:
+                                    fuzzy_matches.append({
+                                        'file1': file1_name,
+                                        'file2': file2_name,
+                                        'field1': field1,
+                                        'field2': field2,
+                                        'similarity': self.calculate_similarity(field1, field2)
+                                    })
+            
+            # 显示模糊匹配结果
+            if fuzzy_matches:
+                print(f"💡 发现 {len(fuzzy_matches)} 个字段模糊匹配:")
+                for match in fuzzy_matches:
+                    print(f"  📋 {match['file1']} 的 '{match['field1']}' 与 {match['file2']} 的 '{match['field2']}' 相似度: {match['similarity']:.2f}")
+                print(f"💡 这些字段可能表示相同的数据，建议检查字段映射")
+            else:
+                print(f"✅ 未发现明显的字段模糊匹配")
+            
+            # 显示检测建议
+            if updateable_fields:
+                print(f"💡 检测到 {len(updateable_fields)} 个可更新字段")
+                print(f"📋 可更新的字段（排除关联字段 '{self.link_field}'）:")
+                for i, field in enumerate(updateable_fields, 1):
+                    # 显示每个字段来自哪些源文件
+                    source_files_with_field = []
+                    for source_file in self.source_files:
+                        source_df = pd.read_excel(source_file)
+                        if field in source_df.columns:
+                            source_files_with_field.append(os.path.basename(source_file))
+                    
+                    field_info = f"{i:2d}. {field}"
+                    if source_files_with_field:
+                        field_info += f" (来自: {', '.join(source_files_with_field)})"
+                    print(field_info)
+                
+                # 让用户选择
+                print(f"\n📝 请选择要更新的字段:")
+                print("📝 输入字段编号，用逗号分隔（如：1,2,3）")
+                print("📝 输入 'all' 选择所有可更新字段")
+                
+                while True:
+                    try:
+                        update_choice = input("请输入要更新的字段编号: ").strip()
+                        if update_choice.lower() == 'all':
+                            self.update_fields = updateable_fields
+                            print(f"✅ 已选择所有 {len(updateable_fields)} 个字段进行更新")
+                            break
+                        else:
+                            update_indices = [int(x.strip()) - 1 for x in update_choice.split(',')]
+                            self.update_fields = [updateable_fields[i] for i in update_indices if 0 <= i < len(updateable_fields)]
+                            
+                            if not self.update_fields:
+                                print("❌ 未选择任何有效字段，请重新选择")
+                                continue
+                            
+                            print(f"✅ 已选择 {len(self.update_fields)} 个字段进行更新:")
+                            for field in self.update_fields:
+                                print(f"  📋 {field}")
+                            break
+                    except ValueError:
+                        print("❌ 请输入有效的数字")
+            else:
+                print(f"❌ 没有可更新的字段")
+                return
+                    
+        except Exception as e:
+            print(f"❌ 读取文件时出错: {str(e)}")
+    
+    def configure_conflict_handling(self):
+        """配置冲突处理方式"""
+        print(f"\n=== 步骤4: 冲突处理配置 ===")
+        
+        print("🤔 当多个源文件对同一记录提供不同数据时，如何处理冲突？")
+        print("1. 询问用户选择（推荐）")
+        print("2. 使用第一个源文件的数据")
+        print("3. 使用最后一个源文件的数据")
+        print("4. 跳过冲突的记录")
+        
+        while True:
+            choice = input("\n请选择冲突处理方式 (1/2/3/4): ").strip()
+            if choice == "1":
+                self.conflict_handling = "ask"
+                print("✅ 已选择：询问用户选择")
+                break
+            elif choice == "2":
+                self.conflict_handling = "first"
+                print("✅ 已选择：使用第一个源文件的数据")
+                break
+            elif choice == "3":
+                self.conflict_handling = "last"
+                print("✅ 已选择：使用最后一个源文件的数据")
+                break
+            elif choice == "4":
+                self.conflict_handling = "skip"
+                print("✅ 已选择：跳过冲突的记录")
+                break
+            else:
+                print("❌ 无效选择，请输入 1、2、3 或 4")
+    
+    def set_multi_sync_output(self):
+        """设置多源同步输出"""
+        print(f"\n=== 步骤5: 输出设置 ===")
+        
+        # 设置输出目录
+        self.output_directory = input("请输入输出目录路径（或按回车使用默认目录G:\\wang\\excel）: ").strip()
+        if not self.output_directory:
+            self.output_directory = "G:\\wang\\excel"
+        
+        # 确保输出目录存在
+        if not os.path.exists(self.output_directory):
+            try:
+                os.makedirs(self.output_directory)
+                print(f"✅ 已创建输出目录: {self.output_directory}")
+            except Exception as e:
+                print(f"❌ 创建输出目录失败: {str(e)}")
+                return
+        
+        print(f"✅ 输出目录: {self.output_directory}")
+    
+    def execute_multi_sync(self):
+        """执行多源同步"""
+        print(f"\n=== 步骤6: 执行多源同步 ===")
+        
+        try:
+            # 备份目标文件
+            self.backup_target_file()
+            
+            # 读取目标文件
+            target_df = pd.read_excel(self.target_file)
+            print(f"📊 目标文件包含 {len(target_df)} 条记录")
+            
+            # 读取所有源文件
+            source_data = {}
+            for source_file in self.source_files:
+                source_df = pd.read_excel(source_file)
+                source_data[os.path.basename(source_file)] = source_df
+                print(f"📊 源文件 '{os.path.basename(source_file)}' 包含 {len(source_df)} 条记录")
+            
+            # 执行多源同步
+            updated_df = self.perform_multi_sync(target_df, source_data)
+            
+            # 保存更新后的文件
+            self.save_multi_sync_file(updated_df)
+            
+            # 显示同步结果
+            self.show_multi_sync_results(target_df, updated_df)
+            
+        except Exception as e:
+            print(f"❌ 执行多源同步时出错: {str(e)}")
+    
+    def perform_multi_sync(self, target_df: pd.DataFrame, source_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """
+        执行多源同步
+        
+        Args:
+            target_df: 目标数据框
+            source_data: 源数据字典 {文件名: 数据框}
+            
+        Returns:
+            更新后的数据框
+        """
+        print(f"\n🔄 开始执行多源同步...")
+        
+        # 确定关联字段的实际名称
+        actual_link_field = self.find_actual_field_name(target_df, self.link_field)
+        if not actual_link_field:
+            print(f"❌ 目标文件中找不到关联字段 '{self.link_field}'")
+            return target_df
+        
+        # 创建更新后的数据框副本
+        updated_df = target_df.copy()
+        
+        # 统计信息
+        total_updates = 0
+        conflicts_resolved = 0
+        conflicts_skipped = 0
+        
+        # 为每个目标记录查找源数据
+        for target_idx, target_row in updated_df.iterrows():
+            link_value = str(target_row[actual_link_field]).strip()
+            
+            # 跳过空关联值
+            if pd.isna(link_value) or link_value == '':
+                continue
+            
+            # 在所有源文件中查找匹配的记录
+            matching_data = {}
+            for source_name, source_df in source_data.items():
+                # 确定源文件中的关联字段名称
+                source_link_field = self.find_actual_field_name(source_df, self.link_field)
+                if not source_link_field:
+                    continue
+                
+                # 查找匹配的记录
+                matching_rows = source_df[source_df[source_link_field].astype(str).str.strip() == link_value]
+                if not matching_rows.empty:
+                    matching_data[source_name] = matching_rows.iloc[0]  # 取第一条匹配记录
+            
+            if not matching_data:
+                continue
+            
+            # 处理每个更新字段
+            for update_field in self.update_fields:
+                # 确定目标字段的实际名称
+                actual_update_field = self.find_actual_field_name(updated_df, update_field)
+                if not actual_update_field:
+                    continue
+                
+                # 收集所有源文件中的值
+                field_values = {}
+                for source_name, source_row in matching_data.items():
+                    # 确定源文件中的字段名称
+                    source_field = self.find_actual_field_name(source_data[source_name], update_field)
+                    if source_field and not pd.isna(source_row[source_field]):
+                        field_values[source_name] = str(source_row[source_field]).strip()
+                
+                if not field_values:
+                    continue
+                
+                # 检查是否有冲突（多个不同的值）
+                unique_values = set(field_values.values())
+                if len(unique_values) == 1:
+                    # 没有冲突，直接更新
+                    value = list(unique_values)[0]
+                    updated_df.at[target_idx, actual_update_field] = value
+                    total_updates += 1
+                else:
+                    # 有冲突，根据配置处理
+                    if self.conflict_handling == "ask":
+                        # 询问用户选择
+                        choice = self.ask_user_for_conflict_resolution(link_value, update_field, field_values)
+                        if choice:
+                            updated_df.at[target_idx, actual_update_field] = choice
+                            total_updates += 1
+                            conflicts_resolved += 1
+                    elif self.conflict_handling == "first":
+                        # 使用第一个源文件的数据
+                        first_source = list(field_values.keys())[0]
+                        updated_df.at[target_idx, actual_update_field] = field_values[first_source]
+                        total_updates += 1
+                        conflicts_resolved += 1
+                    elif self.conflict_handling == "last":
+                        # 使用最后一个源文件的数据
+                        last_source = list(field_values.keys())[-1]
+                        updated_df.at[target_idx, actual_update_field] = field_values[last_source]
+                        total_updates += 1
+                        conflicts_resolved += 1
+                    elif self.conflict_handling == "skip":
+                        # 跳过冲突的记录
+                        conflicts_skipped += 1
+                        continue
+        
+        print(f"✅ 多源同步完成:")
+        print(f"  📊 总更新数: {total_updates}")
+        print(f"  🔄 冲突解决数: {conflicts_resolved}")
+        print(f"  ⏭️  冲突跳过数: {conflicts_skipped}")
+        
+        return updated_df
+    
+    def ask_user_for_conflict_resolution(self, link_value: str, field_name: str, field_values: Dict[str, str]) -> str:
+        """
+        询问用户解决冲突
+        
+        Args:
+            link_value: 关联值
+            field_name: 字段名
+            field_values: 字段值字典 {源文件名: 值}
+            
+        Returns:
+            用户选择的值或None
+        """
+        print(f"\n⚠️  发现数据冲突:")
+        print(f"  🔗 关联值: {link_value}")
+        print(f"  📋 字段: {field_name}")
+        print(f"  📄 不同源文件提供的值:")
+        
+        for i, (source_name, value) in enumerate(field_values.items(), 1):
+            print(f"    {i}. {source_name}: {value}")
+        
+        print(f"  📝 请选择要使用的值（输入编号）:")
+        print(f"  📝 输入 'skip' 跳过此字段的更新")
+        
+        while True:
+            choice = input("请选择: ").strip()
+            if choice.lower() == 'skip':
+                return None
+            try:
+                choice_index = int(choice) - 1
+                if 0 <= choice_index < len(field_values):
+                    selected_source = list(field_values.keys())[choice_index]
+                    selected_value = field_values[selected_source]
+                    print(f"✅ 已选择: {selected_source} 的值 '{selected_value}'")
+                    return selected_value
+                else:
+                    print("❌ 选择编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字或 'skip'")
+    
+    def save_multi_sync_file(self, updated_df: pd.DataFrame):
+        """保存多源同步文件"""
+        try:
+            # 生成输出文件名
+            target_basename = os.path.splitext(os.path.basename(self.target_file))[0]
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+            output_filename = f"{target_basename}_多源同步_{timestamp}.xlsx"
+            output_path = os.path.join(self.output_directory, output_filename)
+            
+            # 保存文件
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # 主数据表
+                updated_df.to_excel(writer, sheet_name='同步后数据', index=False)
+                
+                # 同步统计表
+                stats_data = {
+                    '统计项目': [
+                        '源文件数量',
+                        '目标文件',
+                        '关联字段',
+                        '更新字段数',
+                        '冲突处理方式',
+                        '同步时间'
+                    ],
+                    '数值': [
+                        len(self.source_files),
+                        os.path.basename(self.target_file),
+                        self.link_field,
+                        len(self.update_fields),
+                        self.conflict_handling,
+                        pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                    ]
+                }
+                stats_df = pd.DataFrame(stats_data)
+                stats_df.to_excel(writer, sheet_name='同步统计', index=False)
+            
+            print(f"✅ 同步结果已保存到: {output_path}")
+            self.output_file = output_path
+            
+        except Exception as e:
+            print(f"❌ 保存文件时出错: {str(e)}")
+    
+    def show_multi_sync_results(self, original_df: pd.DataFrame, updated_df: pd.DataFrame):
+        """显示多源同步结果"""
+        print(f"\n=== 多源同步结果 ===")
+        print(f"📊 原始记录数: {len(original_df)}")
+        print(f"📊 更新后记录数: {len(updated_df)}")
+        print(f"📄 输出文件: {self.output_file}")
+        print(f"📋 更新的字段: {', '.join(self.update_fields)}")
+        print(f"🔗 关联字段: {self.link_field}")
 
 def main():
     """主函数"""
