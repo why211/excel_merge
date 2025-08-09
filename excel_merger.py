@@ -893,15 +893,15 @@ class ExcelProcessor:
         
         # 询问是否启用交互式去重
         print(f"\n🤖 去重模式选择:")
-        print(f"📝 自动去重: 自动保留每组的第一条记录")
-        print(f"🎯 交互式去重: 当发现字段值冲突时，让您选择如何处理")
+        print(f"📝 自动去重: 学号+姓名相同的记录自动合并，学号相同但姓名不同的保留第一条")
+        print(f"🎯 交互式去重: 学号+姓名相同的记录自动合并，学号相同但姓名不同时询问处理方式")
         interactive_choice = input("是否启用交互式去重？(y/n，默认y): ").strip().lower()
         self.enable_interactive_dedup = interactive_choice not in ['n', 'no', '否']
         
         if self.enable_interactive_dedup:
-            print("✅ 已启用交互式去重，遇到冲突时会询问您的处理方式")
+            print("✅ 已启用交互式去重，学号相同但姓名不同时会询问您的处理方式")
         else:
-            print("✅ 使用自动去重模式，将自动保留第一条记录")
+            print("✅ 使用自动去重模式，学号相同但姓名不同时将自动保留第一条记录")
         
         # 如果去重，选择去重字段
         print(f"\n📋 请选择去重字段（基于这些字段的组合来判断重复）:")
@@ -1066,6 +1066,10 @@ class ExcelProcessor:
                 selected_data = selected_data[selected_fields]
                 print(f"📋 按用户选择顺序排列字段: {selected_fields}")
                 
+                # 添加文件来源信息
+                selected_data['数据来源文件'] = os.path.basename(file)
+                selected_data['数据来源路径'] = os.path.abspath(file)
+                
                 all_data.append(selected_data)
                 file_rows = len(selected_data)
                 total_rows += file_rows
@@ -1091,7 +1095,27 @@ class ExcelProcessor:
             print(f"\n🔄 正在按字段 {dedup_fields} 去重...")
             before_count = len(combined_df)
             
-            # 查找重复记录
+            # 检查是否包含学号和姓名字段
+            student_id_field = None
+            student_name_field = None
+            
+            # 查找学号字段
+            for field in dedup_fields:
+                if '学号' in field:
+                    student_id_field = field
+                    break
+            
+            # 查找姓名字段
+            for field in combined_df.columns:
+                if '姓名' in field:
+                    student_name_field = field
+                    break
+            
+            print(f"📋 检测到的字段:")
+            print(f"  🔑 学号字段: {student_id_field}")
+            print(f"  👤 姓名字段: {student_name_field}")
+            
+            # 查找重复记录（基于去重字段）
             duplicated_mask = combined_df.duplicated(subset=dedup_fields, keep=False)
             duplicated_records = combined_df[duplicated_mask]
             
@@ -1110,83 +1134,205 @@ class ExcelProcessor:
                 # 按去重字段分组显示重复记录
                 duplicate_groups = duplicated_records.groupby(dedup_fields)
                 group_count = 0
+                conflict_group_count = 0  # 有冲突的组数量
                 
                 for group_key, group_df in duplicate_groups:
-                    group_count += 1
-                    if group_count <= 10:  # 最多显示前10组重复记录
-                        print(f"\n  {'='*50}")
-                        print(f"  📝 重复组 {group_count} (共 {len(group_df)} 条重复记录)")
-                        print(f"  {'='*50}")
-                        
-                        # 显示重复字段的值
-                        if isinstance(group_key, tuple):
-                            for i, field in enumerate(dedup_fields):
-                                print(f"  🔑 {field}: {group_key[i]}")
-                        else:
-                            print(f"  🔑 {dedup_fields[0]}: {group_key}")
-                        
-                        print(f"  {'-'*40}")
-                        
-                        # 显示重复记录的详细信息（最多显示3条）
-                        display_count = min(3, len(group_df))
-                        for idx, (_, row) in enumerate(group_df.head(display_count).iterrows()):
-                            print(f"  📄 第 {idx + 1} 条记录:")
+                    # 检查这个组是否有真正的冲突（学号相同但姓名不同）
+                    has_conflict = self._group_has_student_name_conflict(group_df, dedup_fields, student_name_field)
+                    
+                    if has_conflict:
+                        conflict_group_count += 1
+                        if conflict_group_count <= 10:  # 最多显示前10组有冲突的重复记录
+                            print(f"\n  {'='*50}")
+                            print(f"  📝 冲突重复组 {conflict_group_count} (共 {len(group_df)} 条重复记录)")
+                            print(f"  {'='*50}")
                             
-                            # 将字段值格式化为表格形式
-                            field_values = []
-                            for field in combined_df.columns:
-                                value = row[field]
-                                if pd.notna(value) and str(value).strip():
-                                    # 处理过长的值
-                                    str_value = str(value)
-                                    if len(str_value) > 20:
-                                        str_value = str_value[:17] + "..."
-                                    field_values.append(f"{field}: {str_value}")
-                                else:
-                                    field_values.append(f"{field}: <空值>")
+                            # 显示重复字段的值
+                            if isinstance(group_key, tuple):
+                                for i, field in enumerate(dedup_fields):
+                                    display_value = self._format_display_value(group_key[i])
+                                    print(f"  🔑 {field}: {display_value}")
+                            else:
+                                display_value = self._format_display_value(group_key)
+                                print(f"  🔑 {dedup_fields[0]}: {display_value}")
                             
-                            # 每行显示2个字段，美化显示
-                            for i in range(0, len(field_values), 2):
-                                line_fields = field_values[i:i+2]
-                                if len(line_fields) == 2:
-                                    print(f"     {line_fields[0]:<30} | {line_fields[1]}")
-                                else:
-                                    print(f"     {line_fields[0]}")
+                            # 定义非去重字段列表（在使用前定义）
+                            non_dedup_fields = [field for field in group_df.columns if field not in dedup_fields]
                             
-                            if idx < display_count - 1:
-                                print(f"     {'-'*35}")
-                        
-                        if len(group_df) > display_count:
-                            print(f"  ⚠️  还有 {len(group_df) - display_count} 条重复记录未显示")
-                    else:
-                        break
+                            # 显示涉及的文件
+                            if '数据来源文件' in group_df.columns:
+                                # 基于文件名+路径去重
+                                file_refs = group_df[['数据来源文件', '数据来源路径']].drop_duplicates()
+                                # 先做逐文件校验，得到可用文件清单
+                                verified_by_path: Dict[str, bool] = {}
+                                for _, ref in file_refs.iterrows():
+                                    full_path = str(ref['数据来源路径'])
+                                    try:
+                                        ok = self._verify_group_key_in_file(full_path, dedup_fields, group_key)
+                                    except Exception:
+                                        ok = False
+                                    verified_by_path[full_path] = ok
+
+                                # 仅展示校验通过的文件
+                                verified_files = [str(ref['数据来源文件']) for _, ref in file_refs.iterrows() if verified_by_path.get(str(ref['数据来源路径']), False)]
+                                skipped_files = [str(ref['数据来源文件']) for _, ref in file_refs.iterrows() if not verified_by_path.get(str(ref['数据来源路径']), False)]
+
+                                if verified_files:
+                                    print(f"  📁 涉及文件: {', '.join(verified_files)}")
+                                if skipped_files:
+                                    print(f"  ⚠️ 已忽略未在源文件找到的文件: {', '.join(skipped_files)}")
+                                
+                                # 调试信息：显示每个文件的记录数和具体内容（并校验是否真实存在）
+                                print(f"  🔍 详细分布:")
+                                for _, ref in file_refs.iterrows():
+                                    base_name = str(ref['数据来源文件'])
+                                    full_path = str(ref['数据来源路径'])
+                                    file_records = group_df[group_df['数据来源路径'] == full_path]
+                                    exists_in_src = verified_by_path.get(full_path, False)
+                                    # 只显示校验通过的文件详情
+                                    if not exists_in_src:
+                                        continue
+                                    print(f"     • {base_name}: {len(file_records)} 条记录")
+                                    print(f"       校验: ✅ 已在源文件找到")
+                                    
+                                    # 显示该文件中的具体记录内容（显示所有字段用于调试）
+                                    for idx, (_, record) in enumerate(file_records.iterrows()):
+                                        if idx >= 2:  # 最多显示2条记录
+                                            if len(file_records) > 2:
+                                                print(f"       ... 还有 {len(file_records) - 2} 条记录")
+                                            break
+                                        
+                                        record_info = []
+                                        # 显示所有字段（包括去重字段）用于调试
+                                        for field in group_df.columns:
+                                            if field in ('数据来源文件', '数据来源路径'):
+                                                continue
+                                            value = record[field]
+                                            if pd.notna(value) and str(value).strip():
+                                                display_value = self._format_display_value(value)
+                                                record_info.append(f"{field}={display_value}")
+                                            else:
+                                                record_info.append(f"{field}=<空值>")
+                                        
+                                        print(f"       [{idx+1}] {', '.join(record_info)}")
+                            
+                            print(f"  {'-'*40}")
+                            
+                            # 调试：显示数据框的完整结构信息
+                            print(f"  🔧 调试信息:")
+                            # 只基于校验通过的行统计
+                            if '数据来源路径' in group_df.columns:
+                                verified_mask = group_df['数据来源路径'].map(lambda p: verified_by_path.get(str(p), False))
+                                group_df_verified = group_df[verified_mask] if verified_mask.any() else group_df.iloc[0:0]
+                            else:
+                                group_df_verified = group_df
+
+                            print(f"     • 数据框形状: {group_df_verified.shape}")
+                            print(f"     • 所有字段: {list(group_df.columns)}")
+                            print(f"     • 去重字段: {dedup_fields}")
+                            print(f"     • 非去重字段: {non_dedup_fields}")
+                            
+                            # 分析并显示冲突的具体情况
+                            conflict_summary = {}
+                            
+                            # 找出每个字段的不同值（排除文件来源字段）
+                            for field in non_dedup_fields:
+                                if field in ('数据来源文件', '数据来源路径'):  # 跳过文件来源字段
+                                    continue
+                                unique_vals = []
+                                seen = set()
+                                for value in group_df_verified[field] if not group_df_verified.empty else []:
+                                    if pd.isna(value):
+                                        str_val = "<空值>"
+                                    else:
+                                        str_val = str(value).strip()
+                                    if str_val not in seen:
+                                        seen.add(str_val)
+                                        unique_vals.append(str_val)
+                                
+                                if len([v for v in unique_vals if v != "<空值>"]) > 1:
+                                    conflict_summary[field] = unique_vals
+                            
+                            # 显示冲突字段的不同值（汇总：每个取值的数量与来源文件）
+                            if conflict_summary:
+                                print(f"  🔍 冲突字段及其不同值（按取值统计）:")
+                                for field in conflict_summary:
+                                    # 为该字段统计不同取值的数量与来源文件
+                                    value_to_count: Dict[str, int] = {}
+                                    value_to_files: Dict[str, set] = {}
+
+                                    for _, row in group_df_verified.iterrows() if not group_df_verified.empty else []:
+                                        raw_val = row[field]
+                                        if pd.isna(raw_val) or (isinstance(raw_val, str) and raw_val.strip() == ""):
+                                            disp_val = "<空值>"
+                                        else:
+                                            disp_val = self._format_display_value(raw_val).strip()
+
+                                        value_to_count[disp_val] = value_to_count.get(disp_val, 0) + 1
+                                        if '数据来源文件' in group_df.columns:
+                                            src_file = row['数据来源文件']
+                                            value_to_files.setdefault(disp_val, set()).add(str(src_file))
+
+                                    # 仅保留非空值用于冲突展示
+                                    non_empty_items = [(v, c) for v, c in value_to_count.items() if v != "<空值>"]
+                                    # 按数量降序
+                                    non_empty_items.sort(key=lambda x: x[1], reverse=True)
+
+                                    print(f"     • {field}: 共 {len(non_empty_items)} 种不同取值")
+                                    for val, cnt in non_empty_items:
+                                        files_list = sorted(list(value_to_files.get(val, [])))
+                                        files_str = ", ".join(files_list) if files_list else "-"
+                                        print(f"       - {val}: {cnt} 条 (来源: {files_str})")
+
+                                print(f"  {'-'*40}")
+
+                            # 统计说明（不再展示样本记录，避免重复与误解）
+                            total_shown = len(group_df_verified) if not group_df_verified.empty else 0
+                            print(f"  💡 已基于校验通过的 {total_shown} 条记录进行统计展示。")
+
+                            # 显示统计信息
+                            if len(group_df_verified) > 0:
+                                remaining = 0  # 已以汇总方式展示，不再单独显示样本与剩余条目
+                                if remaining > 0:
+                                    print(f"  💡 还有 {remaining} 条记录与上述取值重复")
                 
-                if group_count > 10:
-                    print(f"\n  ⚠️  还有 {len(duplicate_groups) - 10} 组重复记录未显示")
+                # 更新统计信息显示
+                total_duplicate_groups = duplicated_records.groupby(dedup_fields).ngroups
+                if conflict_group_count > 0:
+                    print(f"\n📊 统计信息:")
+                    print(f"  📋 总重复组数: {total_duplicate_groups}")
+                    print(f"  ⚠️  有冲突的重复组: {conflict_group_count}")
+                    print(f"  ✅ 完全相同的重复组: {total_duplicate_groups - conflict_group_count}")
+                    if conflict_group_count > 10:
+                        print(f"  💡 只显示了前10组有冲突的重复记录")
+                else:
+                    print(f"\n✅ 所有重复记录都是完全相同的，将自动去除，无需用户处理")
                 
                 print(f"\n" + "🔧" + "-"*58)
                 if self.enable_interactive_dedup:
-                    print(f"💡 交互式去重策略说明:")
-                    print(f"   • 对于有字段值冲突的重复组，将询问您的处理方式")
-                    print(f"   • 您可以选择保留特定值或创建多条记录")
+                    print(f"💡 去重策略说明:")
+                    print(f"   • 学号+姓名完全相同的记录：自动合并")
+                    print(f"   • 学号相同但姓名不同的记录：询问您的处理方式")
                     print(f"   • 所有原始重复记录将保存到Excel的'重复记录'工作表中")
                 else:
-                    print(f"💡 自动去重策略说明:")
-                    print(f"   • 保留每组的第一条记录")
-                    print(f"   • 删除后续所有重复记录") 
+                    print(f"💡 去重策略说明:")
+                    print(f"   • 学号+姓名完全相同的记录：自动合并")
+                    print(f"   • 学号相同但姓名不同的记录：保留第一条")
                     print(f"   • 所有重复记录将保存到Excel的'重复记录'工作表中")
                 print(f"🔧" + "-"*58)
             
             # 执行去重处理
-            if self.enable_interactive_dedup and len(duplicated_records) > 0:
-                print(f"\n🎯 开始交互式去重处理...")
+            if len(duplicated_records) > 0:
                 processed_records = []
                 duplicate_groups = duplicated_records.groupby(dedup_fields)
+                conflicts_found = 0
                 
                 for group_key, group_df in duplicate_groups:
-                    resolved_records = self.resolve_field_conflicts(group_key, group_df, dedup_fields)
+                    resolved_records, had_conflict = self.resolve_student_conflicts(group_key, group_df, dedup_fields, student_name_field)
                     if not resolved_records.empty:
                         processed_records.append(resolved_records)
+                    if had_conflict:
+                        conflicts_found += 1
                 
                 if processed_records:
                     # 重新构建数据框：非重复记录 + 处理后的重复记录
@@ -1199,6 +1345,22 @@ class ExcelProcessor:
                 
                 after_count = len(combined_df)
                 removed_count = before_count - after_count
+                
+                # 显示处理结果
+                if conflicts_found > 0:
+                    print(f"\n🔄 去重处理完成:")
+                    print(f"  📊 发现姓名冲突的学号: {conflicts_found} 个")
+                    print(f"  ✅ 自动合并的重复记录: {len(duplicate_groups) - conflicts_found} 组")
+                else:
+                    print(f"\n✅ 去重处理完成: 所有重复记录都是学号+姓名完全相同，已自动合并")
+                
+                # 更新重复记录统计，避免导出时长度不匹配
+                # 重新计算实际被处理的重复记录
+                if processed_records:
+                    # 保存原始的重复记录用于导出
+                    self.duplicate_records = duplicated_records.copy()
+                    # 更新重复记录数量为实际处理的数量
+                    self.duplicate_count = len(duplicated_records)
             else:
                 # 传统自动去重
                 combined_df = combined_df.drop_duplicates(subset=dedup_fields, keep='first')
@@ -1318,17 +1480,26 @@ class ExcelProcessor:
                     
                     # 为重复记录添加分组信息
                     if self.dedup_fields:
-                        duplicate_groups = duplicate_export.groupby(self.dedup_fields)
-                        group_ids = []
-                        group_sizes = []
-                        
-                        for group_id, (group_key, group_df) in enumerate(duplicate_groups, 1):
-                            for _ in range(len(group_df)):
-                                group_ids.append(group_id)
-                                group_sizes.append(len(group_df))
-                        
-                        duplicate_export.insert(0, '重复组ID', group_ids)
-                        duplicate_export.insert(1, '组内重复数', group_sizes)
+                        try:
+                            duplicate_groups = duplicate_export.groupby(self.dedup_fields)
+                            group_ids = []
+                            group_sizes = []
+                            
+                            for group_id, (group_key, group_df) in enumerate(duplicate_groups, 1):
+                                for _ in range(len(group_df)):
+                                    group_ids.append(group_id)
+                                    group_sizes.append(len(group_df))
+                            
+                            # 确保长度匹配
+                            if len(group_ids) == len(duplicate_export):
+                                duplicate_export.insert(0, '重复组ID', group_ids)
+                                duplicate_export.insert(1, '组内重复数', group_sizes)
+                            else:
+                                print(f"⚠️  重复记录分组信息长度不匹配，跳过分组标记")
+                                print(f"   记录数: {len(duplicate_export)}, 分组标记数: {len(group_ids)}")
+                        except Exception as e:
+                            print(f"⚠️  处理重复记录分组信息时出错: {str(e)}")
+                            print(f"   将导出原始重复记录，不包含分组信息")
                     
                     duplicate_export.to_excel(writer, sheet_name='重复记录', index=False)
                     sheet_names.append('重复记录')
@@ -1463,83 +1634,75 @@ class ExcelProcessor:
         Returns:
             处理后的数据框
         """
-        if not self.enable_interactive_dedup or len(group_df) <= 1:
+        if len(group_df) <= 1:
+            return group_df.head(1)  # 只有一条记录，直接返回
+        
+        if not self.enable_interactive_dedup and not self.enable_smart_dedup:
             return group_df.head(1)  # 默认保留第一条
         
-        # 检查非去重字段是否有冲突
-        non_dedup_fields = [field for field in group_df.columns if field not in dedup_fields]
+        # 检查是否所有记录完全相同（排除数据来源文件字段）
+        all_fields = [field for field in group_df.columns if field != '数据来源文件']
+        first_record = group_df.iloc[0]
+        
+        # 检查是否所有记录都与第一条记录完全相同
+        all_identical = True
+        for _, row in group_df.iterrows():
+            for field in all_fields:
+                # 处理NaN值的比较
+                first_val = first_record[field]
+                current_val = row[field]
+                
+                # 如果两个值都是NaN，认为相同
+                if pd.isna(first_val) and pd.isna(current_val):
+                    continue
+                # 如果一个是NaN另一个不是，认为不同
+                elif pd.isna(first_val) or pd.isna(current_val):
+                    all_identical = False
+                    break
+                # 如果两个值都不是NaN，比较字符串形式
+                elif str(first_val).strip() != str(current_val).strip():
+                    all_identical = False
+                    break
+            
+            if not all_identical:
+                break
+        
+        if all_identical:
+            # 所有记录完全相同，这是真正的重复，直接保留第一条
+            return group_df.head(1)
+        
+        # 检查非去重字段是否有冲突（排除文件来源字段）
+        non_dedup_fields = [field for field in group_df.columns if field not in dedup_fields and field != '数据来源文件']
         conflicts = {}
         
         for field in non_dedup_fields:
-            # 获取唯一值，保持出现顺序
+            # 获取唯一值，保持出现顺序，包括NaN值的处理
             seen = set()
             unique_values = []
-            for value in group_df[field].dropna():
-                if value not in seen:
-                    seen.add(value)
+            
+            for value in group_df[field]:
+                # 处理NaN值
+                if pd.isna(value):
+                    str_value = "<NaN>"
+                else:
+                    str_value = str(value).strip()
+                
+                if str_value not in seen:
+                    seen.add(str_value)
                     unique_values.append(value)
             
-            if len(unique_values) > 1:
+            # 只有当确实有不同的非NaN值时才认为是冲突
+            non_nan_values = [v for v in unique_values if not pd.isna(v)]
+            if len(non_nan_values) > 1:
                 conflicts[field] = unique_values
         
         if not conflicts:
             return group_df.head(1)  # 没有冲突，保留第一条
         
-        print(f"\n{'🔧' + '='*60}")
-        print(f"⚠️  发现字段值冲突！")
-        print(f"{'🔧' + '='*60}")
-        
-        # 显示重复组信息
-        if isinstance(group_key, tuple):
-            for i, field in enumerate(dedup_fields):
-                print(f"🔑 {field}: {group_key[i]}")
-        else:
-            print(f"🔑 {dedup_fields[0]}: {group_key}")
-        
-        print(f"\n📊 该组有 {len(group_df)} 条记录，以下字段存在不同值:")
-        
-        # 显示冲突的字段和值
-        for field, values in conflicts.items():
-            print(f"\n📝 字段 '{field}' 的不同值:")
-            for i, value in enumerate(values, 1):
-                if pd.isna(value):
-                    print(f"  {i}. <空值>")
-                else:
-                    print(f"  {i}. {value}")
-        
-        print(f"\n🤔 请选择处理方式:")
-        print(f"  1. 保留第一条记录 (默认)")
-        print(f"  2. 手动选择每个冲突字段的值")
-        print(f"  3. 为每个不同值创建单独记录")
-        print(f"  4. 跳过此组，不做处理")
-        
-        while True:
-            try:
-                choice = input("\n请选择处理方式 (1-4，默认1): ").strip()
-                if not choice:
-                    choice = "1"
-                
-                if choice == "1":
-                    print("✅ 保留第一条记录")
-                    return group_df.head(1)
-                
-                elif choice == "2":
-                    return self._manual_resolve_conflicts(group_df, conflicts, dedup_fields)
-                
-                elif choice == "3":
-                    print("✅ 为每个不同值创建单独记录")
-                    return self._create_separate_records(group_df, conflicts, dedup_fields)
-                
-                elif choice == "4":
-                    print("⚠️  跳过此组")
-                    return pd.DataFrame()  # 返回空数据框
-                
-                else:
-                    print("❌ 请输入 1-4 之间的数字")
-                    
-            except KeyboardInterrupt:
-                print("\n⚠️  用户中断，保留第一条记录")
-                return group_df.head(1)
+        # 这个函数现在已经被 resolve_student_conflicts 替代
+        # 直接返回第一条记录作为后备方案
+        print("⚠️  使用后备处理方案：保留第一条记录")
+        return group_df.head(1)
     
     def _manual_resolve_conflicts(self, group_df: pd.DataFrame, conflicts: Dict, dedup_fields: List[str]) -> pd.DataFrame:
         """手动解决冲突"""
@@ -1610,6 +1773,198 @@ class ExcelProcessor:
             
             result_records.append(new_record)
             print(f"  📄 记录 {i+1}: {main_field}={main_value}")
+        
+        return pd.DataFrame(result_records)
+    
+    def _keep_most_frequent_values(self, group_df: pd.DataFrame, conflicts: Dict, dedup_fields: List[str]) -> pd.DataFrame:
+        """保留出现次数最多的值"""
+        result_record = group_df.iloc[0].copy()  # 基于第一条记录
+        
+        print(f"\n🔧 开始按出现次数最多的值解决冲突...")
+        
+        for field, values in conflicts.items():
+            # 统计每个值的出现次数
+            value_counts = {}
+            for _, row in group_df.iterrows():
+                value = row[field]
+                # 归一化值用于比较
+                if pd.isna(value):
+                    normalized_value = "<空值>"
+                else:
+                    normalized_value = str(value).strip()
+                
+                value_counts[normalized_value] = value_counts.get(normalized_value, 0) + 1
+            
+            # 找到出现次数最多的值
+            most_frequent_normalized = max(value_counts.keys(), key=lambda k: value_counts[k])
+            most_frequent_count = value_counts[most_frequent_normalized]
+            
+            # 找到对应的原始值
+            if most_frequent_normalized == "<空值>":
+                most_frequent_original = None
+            else:
+                # 在原始数据中找到第一个匹配的值
+                most_frequent_original = None
+                for _, row in group_df.iterrows():
+                    value = row[field]
+                    if not pd.isna(value) and str(value).strip() == most_frequent_normalized:
+                        most_frequent_original = value
+                        break
+                if most_frequent_original is None:
+                    most_frequent_original = most_frequent_normalized
+            
+            # 更新结果记录
+            old_value = result_record[field]
+            result_record[field] = most_frequent_original
+            
+            print(f"📊 字段 '{field}': 选择出现次数最多的值")
+            print(f"   • 选择的值: {self._format_display_value(most_frequent_original)} (出现 {most_frequent_count} 次)")
+            print(f"   • 其他值的统计:")
+            for norm_val, count in sorted(value_counts.items(), key=lambda x: x[1], reverse=True)[1:]:
+                print(f"     - {norm_val}: {count} 次")
+            print(f"🔄 字段 '{field}' 更新: {self._format_display_value(old_value)} → {self._format_display_value(most_frequent_original)}")
+        
+        print(f"\n✅ 冲突解决完成！已选择出现次数最多的值")
+        return pd.DataFrame([result_record])
+    
+    def resolve_student_conflicts(self, group_key, group_df: pd.DataFrame, dedup_fields: List[str], student_name_field: str) -> tuple:
+        """
+        解决学生记录冲突：学号相同但姓名不同的情况
+        
+        Args:
+            group_key: 重复组的键值
+            group_df: 重复组的数据框
+            dedup_fields: 去重字段列表
+            student_name_field: 学生姓名字段名
+            
+        Returns:
+            (处理后的数据框, 是否有冲突)
+        """
+        if len(group_df) <= 1:
+            return group_df, False  # 只有一条记录，直接返回
+        
+        # 检查是否有姓名冲突
+        has_name_conflict = self._group_has_student_name_conflict(group_df, dedup_fields, student_name_field)
+        
+        if not has_name_conflict:
+            # 没有姓名冲突，学号+姓名完全相同，静默合并（保留第一条）
+            return group_df.head(1), False
+        
+        # 有姓名冲突，需要处理
+        print(f"\n{'⚠️' + '='*60}")
+        print(f"发现学号相同但姓名不同的记录！")
+        print(f"{'⚠️' + '='*60}")
+        
+        # 显示学号信息
+        if isinstance(group_key, tuple):
+            for i, field in enumerate(dedup_fields):
+                display_value = self._format_display_value(group_key[i])
+                print(f"🔑 {field}: {display_value}")
+        else:
+            display_value = self._format_display_value(group_key)
+            print(f"🔑 {dedup_fields[0]}: {display_value}")
+        
+        # 显示不同的姓名
+        if student_name_field and student_name_field in group_df.columns:
+            unique_names = {}
+            for _, row in group_df.iterrows():
+                name = row[student_name_field]
+                if pd.notna(name) and str(name).strip():
+                    normalized_name = str(name).strip()
+                    if normalized_name not in unique_names:
+                        unique_names[normalized_name] = []
+                    unique_names[normalized_name].append(row)
+            
+            print(f"\n👤 发现 {len(unique_names)} 个不同的姓名:")
+            for i, (name, records) in enumerate(unique_names.items(), 1):
+                # 统计该姓名出现的文件
+                files = set()
+                for record in records:
+                    if '数据来源文件' in record:
+                        files.add(str(record['数据来源文件']))
+                
+                print(f"  {i}. {name} (出现在 {len(records)} 条记录中)")
+                if files:
+                    print(f"     来源文件: {', '.join(sorted(files))}")
+        
+        if not self.enable_interactive_dedup:
+            # 自动模式：保留第一条记录
+            print(f"\n✅ 自动模式：保留第一条记录")
+            return group_df.head(1), True
+        
+        # 交互式模式：询问用户如何处理
+        print(f"\n🤔 请选择处理方式:")
+        print(f"  1. 保留第一条记录 (默认)")
+        print(f"  2. 手动选择要保留的姓名")
+        print(f"  3. 为每个不同姓名创建单独记录")
+        print(f"  4. 跳过此组，不做处理")
+        
+        while True:
+            try:
+                choice = input("\n请选择处理方式 (1-4，默认1): ").strip()
+                if not choice:
+                    choice = "1"
+                
+                if choice == "1":
+                    print("✅ 保留第一条记录")
+                    return group_df.head(1), True
+                
+                elif choice == "2":
+                    result = self._manual_select_student_name(group_df, unique_names, student_name_field)
+                    return result, True
+                
+                elif choice == "3":
+                    print("✅ 为每个不同姓名创建单独记录")
+                    result = self._create_records_by_name(group_df, unique_names, student_name_field)
+                    return result, True
+                
+                elif choice == "4":
+                    print("⚠️  跳过此组")
+                    return pd.DataFrame(), True  # 返回空数据框
+                
+                else:
+                    print("❌ 请输入 1-4 之间的数字")
+                    
+            except KeyboardInterrupt:
+                print("\n⚠️  用户中断，保留第一条记录")
+                return group_df.head(1), True
+    
+    def _manual_select_student_name(self, group_df: pd.DataFrame, unique_names: dict, student_name_field: str) -> pd.DataFrame:
+        """手动选择要保留的学生姓名"""
+        print(f"\n📝 请选择要保留的姓名:")
+        name_list = list(unique_names.keys())
+        for i, name in enumerate(name_list, 1):
+            records_count = len(unique_names[name])
+            print(f"  {i}. {name} ({records_count} 条记录)")
+        
+        while True:
+            try:
+                choice = input(f"请选择姓名编号 (1-{len(name_list)}): ").strip()
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(name_list):
+                    selected_name = name_list[choice_idx]
+                    selected_records = unique_names[selected_name]
+                    
+                    print(f"✅ 已选择姓名: {selected_name}")
+                    
+                    # 返回第一条匹配的记录
+                    result_df = pd.DataFrame([selected_records[0]])
+                    return result_df
+                else:
+                    print("❌ 编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字")
+    
+    def _create_records_by_name(self, group_df: pd.DataFrame, unique_names: dict, student_name_field: str) -> pd.DataFrame:
+        """为每个不同姓名创建单独记录"""
+        result_records = []
+        
+        print(f"\n📝 为每个不同姓名创建记录:")
+        for i, (name, records) in enumerate(unique_names.items(), 1):
+            # 使用该姓名的第一条记录
+            record = records[0]
+            result_records.append(record)
+            print(f"  {i}. 创建记录: 姓名={name}")
         
         return pd.DataFrame(result_records)
 
@@ -1688,6 +2043,62 @@ class ExcelProcessor:
             continue_choice = input("⚠️  备份失败，是否继续处理？(y/n，默认n): ").strip().lower()
             return continue_choice in ['y', 'yes', '是']
 
+    def _format_display_value(self, value) -> str:
+        """
+        格式化显示值，处理数值类型的显示格式
+        
+        Args:
+            value: 要格式化的值
+            
+        Returns:
+            格式化后的字符串
+        """
+        if pd.isna(value):
+            return "<空值>"
+        
+        # 如果是浮点数且小数部分为0，显示为整数
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        
+        # 其他情况直接转换为字符串
+        return str(value)
+
+    def _has_field_conflicts(self, group_df: pd.DataFrame) -> bool:
+        """
+        检查重复组是否有字段冲突（不是所有记录都完全相同）
+        
+        Args:
+            group_df: 重复组的数据框
+            
+        Returns:
+            bool: 如果有冲突返回True，如果所有记录完全相同返回False
+        """
+        if len(group_df) <= 1:
+            return False
+        
+        # 检查是否所有记录完全相同（排除数据来源文件字段）
+        all_fields = [field for field in group_df.columns if field != '数据来源文件']
+        first_record = group_df.iloc[0]
+        
+        # 检查是否所有记录都与第一条记录完全相同
+        for _, row in group_df.iterrows():
+            for field in all_fields:
+                # 处理NaN值的比较
+                first_val = first_record[field]
+                current_val = row[field]
+                
+                # 如果两个值都是NaN，认为相同
+                if pd.isna(first_val) and pd.isna(current_val):
+                    continue
+                # 如果一个是NaN另一个不是，认为不同
+                elif pd.isna(first_val) or pd.isna(current_val):
+                    return True  # 有冲突
+                # 如果两个值都不是NaN，比较字符串形式
+                elif str(first_val).strip() != str(current_val).strip():
+                    return True  # 有冲突
+        
+        return False  # 所有记录完全相同，无冲突
+
     def _manual_select_column(self, required_field: str, available_columns: List[str]) -> str:
         """手动选择列名"""
         if not available_columns:
@@ -1711,6 +2122,152 @@ class ExcelProcessor:
                     print("  ❌ 编号超出范围，请重新选择")
             except ValueError:
                 print("  ❌ 请输入有效的数字")
+
+    def _normalize_for_compare(self, value) -> str:
+        """
+        归一化比较值：
+        - NaN -> ""
+        - 浮点整数 -> 去掉 .0
+        - 其他 -> 去首尾空格的字符串
+        """
+        if pd.isna(value):
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    def _find_actual_field_name_silent(self, df: pd.DataFrame, target_field: str) -> str:
+        """
+        静默列名匹配：不打印、不交互。
+        匹配顺序：精确 -> 不区分大小写 -> 清洗后的列名匹配 -> 常见变体 -> 相似度最高（>=阈值）
+        """
+        available = list(df.columns)
+        # 1) 精确
+        if target_field in available:
+            return target_field
+
+        # 2) 不区分大小写
+        lower_map = {c.lower(): c for c in available}
+        if target_field.lower() in lower_map:
+            return lower_map[target_field.lower()]
+
+        # 3) 清洗后的列名
+        cleaned_target = self.clean_column_name(target_field)
+        cleaned_map = {self.clean_column_name(c): c for c in available}
+        if cleaned_target in cleaned_map:
+            return cleaned_map[cleaned_target]
+
+        # 4) 常见变体
+        if hasattr(self, 'common_column_variants') and target_field in self.common_column_variants:
+            for variant in self.common_column_variants[target_field]:
+                # 先精确
+                if variant in available:
+                    return variant
+                # 大小写
+                if variant.lower() in lower_map:
+                    return lower_map[variant.lower()]
+                # 清洗后
+                cv = self.clean_column_name(variant)
+                if cv in cleaned_map:
+                    return cleaned_map[cv]
+
+        # 5) 相似度
+        best_col = None
+        best_sim = 0.0
+        for col in available:
+            sim = SequenceMatcher(None, cleaned_target.lower(), self.clean_column_name(col).lower()).ratio()
+            if sim > best_sim:
+                best_sim = sim
+                best_col = col
+        if best_col and best_sim >= getattr(self, 'similarity_threshold', 0.8):
+            return best_col
+
+        return None
+
+    def _verify_group_key_in_file(self, file_path: str, dedup_fields: List[str], group_key) -> bool:
+        """
+        校验：在指定的源文件中，是否存在与当前重复组键一致的记录。
+        静默匹配列名，避免打印和交互，且进行值归一化比较。
+        """
+        try:
+            df_src = pd.read_excel(file_path)
+        except Exception:
+            return False
+
+        # 定位实际列名（静默）
+        actual_cols = []
+        for field in dedup_fields:
+            actual = self._find_actual_field_name_silent(df_src, field)
+            if not actual:
+                return False
+            actual_cols.append(actual)
+
+        # 组装组键值
+        if isinstance(group_key, tuple):
+            key_values = list(group_key)
+        else:
+            key_values = [group_key]
+        if len(key_values) != len(actual_cols):
+            return False
+
+        # 构建掩码进行比较（统一归一化）
+        mask = pd.Series([True] * len(df_src))
+        for actual_col, key_value in zip(actual_cols, key_values):
+            series_obj = df_src[actual_col]
+            # 归一化列
+            series_norm = series_obj.apply(self._normalize_for_compare)
+            cmp_val = self._normalize_for_compare(key_value)
+            mask = mask & (series_norm == cmp_val)
+
+        return bool(mask.any())
+
+    def _group_has_student_name_conflict(self, group_df: pd.DataFrame, dedup_fields: List[str], student_name_field: str) -> bool:
+        """
+        检查重复组是否存在学号相同但姓名不同的冲突
+        
+        Args:
+            group_df: 重复组的数据框
+            dedup_fields: 去重字段列表
+            student_name_field: 学生姓名字段名
+            
+        Returns:
+            bool: 如果学号相同但姓名不同返回True，否则返回False
+        """
+        if len(group_df) <= 1 or not student_name_field:
+            return False
+        
+        # 检查姓名字段是否存在不同的值
+        if student_name_field in group_df.columns:
+            unique_names = set()
+            for name in group_df[student_name_field]:
+                if pd.notna(name) and str(name).strip():
+                    normalized_name = str(name).strip()
+                    unique_names.add(normalized_name)
+            
+            # 如果有超过1个不同的姓名，则认为有冲突
+            return len(unique_names) > 1
+        
+        return False
+    
+    def _group_has_conflict_normalized(self, group_df: pd.DataFrame, dedup_fields: List[str]) -> bool:
+        """
+        使用归一化后的取值来判断是否存在真实冲突：
+        - 仅检查非去重字段，且排除来源字段
+        - 忽略空值
+        - 同值不同类型（如 2020062959.0 与 '2020062959'）视为相同
+        """
+        exclude_fields = set(['数据来源文件', '数据来源路径'])
+        for field in group_df.columns:
+            if field in dedup_fields or field in exclude_fields:
+                continue
+            normalized_values = set()
+            for v in group_df[field].tolist():
+                nv = self._normalize_for_compare(v)
+                if nv != "":
+                    normalized_values.add(nv)
+            if len(normalized_values) > 1:
+                return True
+        return False
 
 def main():
     """主函数"""
