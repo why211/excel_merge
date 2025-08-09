@@ -32,15 +32,15 @@ def install_dependencies():
         print(f"错误输出: {e.stderr}")
         return False
 
-def build_exe():
-    """使用PyInstaller构建exe"""
-    print("🔨 开始构建exe文件...")
+def build_console_exe_only():
+    """只构建控制台版本exe"""
+    print("🔨 开始构建控制台版exe文件...")
     
     # PyInstaller命令参数
     cmd = [
         "pyinstaller",
         "--onefile",                    # 打包成单个exe文件
-        "--windowed",                   # 无控制台窗口（GUI模式）
+        "--console",                    # 保留控制台窗口
         "--name=Excel合并同步工具V1.0",   # 输出文件名
         "--icon=excel.jpg",             # 图标文件
         "--add-data=excel_merger.py;.", # 包含合并模块
@@ -59,39 +59,15 @@ def build_exe():
     
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("✅ exe文件构建完成")
-        print(f"📁 输出目录: {os.path.abspath('dist')}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ exe构建失败: {e}")
-        print(f"错误输出: {e.stderr}")
-        return False
-
-def build_console_exe():
-    """构建带控制台的exe版本"""
-    print("🔨 开始构建控制台版exe文件...")
-    
-    cmd = [
-        "pyinstaller",
-        "--onefile",                    # 打包成单个exe文件
-        "--console",                    # 保留控制台窗口
-        "--name=Excel合并同步工具V1.0_console", # 输出文件名
-        "--add-data=excel_merger.py;.", # 包含合并模块
-        "--add-data=excel_processor.py;.", # 包含处理模块
-        "--distpath=dist",              # 输出目录
-        "--workpath=build",             # 工作目录
-        "--clean",                      # 清理临时文件
-        "excel_tool.py"                 # 主程序文件
-    ]
-    
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         print("✅ 控制台版exe文件构建完成")
+        print(f"📁 输出目录: {os.path.abspath('dist')}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ 控制台版exe构建失败: {e}")
         print(f"错误输出: {e.stderr}")
         return False
+
+
 
 def create_readme():
     """创建使用说明文件"""
@@ -105,10 +81,9 @@ def create_readme():
 - 新记录插入：自动检测并询问是否插入新记录
 
 ## 使用方法
-1. 双击运行 `Excel合并同步工具V1.0.exe`（GUI版本，推荐）
-2. 或运行 `Excel合并同步工具V1.0_console.exe`（控制台版本，便于调试）
-3. 根据提示选择相应功能
-4. 按照程序引导完成操作
+1. 双击运行 `Excel合并同步工具V1.0.exe`（控制台版本）
+2. 根据提示选择相应功能
+3. 按照程序引导完成操作
 
 ## 注意事项
 - 请确保Excel文件没有被其他程序占用
@@ -154,16 +129,8 @@ def main():
     if not install_dependencies():
         return False
     
-    # 构建exe文件
-    success = True
-    
-    # 构建GUI版本
-    if not build_exe():
-        success = False
-    
-    # 构建控制台版本
-    if not build_console_exe():
-        success = False
+    # 构建exe文件（仅控制台版本）
+    success = build_console_exe_only()
     
     if success:
         # 创建说明文件
@@ -183,8 +150,8 @@ def main():
         
         print(f"\n📂 完整路径: {os.path.abspath('dist')}")
         print("\n💡 使用建议:")
-        print("  • 推荐使用 Excel合并同步工具V1.0.exe (GUI版本)")
-        print("  • 如需调试请使用 Excel合并同步工具V1.0_console.exe")
+        print("  • 双击运行 Excel合并同步工具V1.0.exe (控制台版本)")
+        print("  • 根据提示选择所需功能")
         print("  • 首次运行可能需要一些时间加载")
         
         return True

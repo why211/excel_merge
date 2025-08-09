@@ -14,13 +14,53 @@ import os
 import traceback
 import time
 
+def is_console_available():
+    """检查是否有可用的控制台"""
+    try:
+        sys.stdout.write("")
+        return True
+    except (OSError, AttributeError):
+        return False
+
+def show_message_box(title, message, msg_type="info"):
+    """显示消息框（用于GUI模式）"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        
+        root = tk.Tk()
+        root.withdraw()  # 隐藏主窗口
+        
+        if msg_type == "error":
+            messagebox.showerror(title, message)
+        elif msg_type == "warning":
+            messagebox.showwarning(title, message)
+        else:
+            messagebox.showinfo(title, message)
+        
+        root.destroy()
+    except ImportError:
+        # 如果tkinter不可用，尝试使用Windows消息框
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0)
+        except:
+            pass
+
 def safe_input(prompt="", default=""):
     """安全的输入函数，处理在打包环境中可能出现的输入流问题"""
     try:
+        if not is_console_available():
+            # GUI模式下，显示消息框并返回默认值
+            show_message_box("Excel合并同步工具", f"{prompt}\n\n将使用默认值: {default}")
+            return default
         return input(prompt)
     except (EOFError, RuntimeError):
         # 在打包环境中如果无法获取输入，使用默认值
-        print(f"输入流不可用，使用默认值: {default}")
+        if is_console_available():
+            print(f"输入流不可用，使用默认值: {default}")
+        else:
+            show_message_box("输入错误", f"输入流不可用，使用默认值: {default}")
         return default
 
 def show_welcome():
@@ -180,17 +220,24 @@ def main():
                     break
     
     except Exception as e:
-        print(f"\n❌ 程序启动失败: {str(e)}")
-        print("详细错误信息:")
-        traceback.print_exc()
+        error_msg = f"程序启动失败: {str(e)}"
+        if is_console_available():
+            print(f"\n❌ {error_msg}")
+            print("详细错误信息:")
+            traceback.print_exc()
+        else:
+            # GUI模式下显示错误消息框
+            show_message_box("Excel合并同步工具 - 错误", error_msg, "error")
     
     finally:
-        print("\n感谢使用Excel工具集！")
+        if is_console_available():
+            print("\n感谢使用Excel工具集！")
         try:
             safe_input("按回车键退出...")
         except Exception:
             # 处理在打包环境中可能出现的输入流问题
-            print("程序将在3秒后自动退出...")
+            if is_console_available():
+                print("程序将在3秒后自动退出...")
             time.sleep(3)
 
 if __name__ == "__main__":
