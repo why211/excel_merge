@@ -25,11 +25,8 @@ class ExcelProcessor:
             'default_value_used': 0
         }
         
-        # 字段补充功能相关属性（新版本）
-        self.enable_field_supplement = False
-        self.field_mappings = {}  # 字段映射字典 {field_name: {link_value: target_value}}
-        self.field_default_values = {}  # 字段默认值字典 {field_name: default_value}
-        self.link_field = '学号'  # 关联字段，默认为学号
+
+
 
         # 同步模式相关属性
         self.operation_mode = "merge"  # "merge" or "sync"
@@ -38,8 +35,16 @@ class ExcelProcessor:
         # 保持有意义的默认关联字段，避免覆盖为空
         self.update_fields = []  # 更新字段列表变量
         self.output_directory = ""  # 输出目录变量
+        self.output_file_path = None  # 完整的输出文件路径（如果用户指定）
         self.unmatched_handling = "empty"  # 未匹配记录处理方式: "empty" 或 "default"
-        self.default_values = {}  # 默认值字典
+        
+        # 替换确认相关属性
+        self.replacement_mode = "ask"  # "ask", "replace_all", "skip_all"
+        self.replacement_decisions = {}  # 存储用户对特定字段的决策
+        
+        # 默认值相关属性
+        self.default_values = {}  # 存储每个字段的默认值
+
         self.sync_stats = {
             'source_records': 0,
             'target_records': 0,
@@ -47,6 +52,13 @@ class ExcelProcessor:
             'failed_records': 0,
             'sync_success_rate': 0.0
         }
+        # 自定义字段别名映射：用于将高相似度的字段视为同一逻辑字段
+        # 形如 { canonical_field: [alias_field_1, alias_field_2, ...] }
+        self.custom_field_aliases: Dict[str, List[str]] = {}
+        
+        # 多源同步字段映射：记录目标字段到各源文件字段的映射关系
+        # 形如 { source_file_name: { target_field: source_field } }
+        self.source_field_mapping: Dict[str, Dict[str, str]] = {}
     
     def calculate_similarity(self, str1: str, str2: str) -> float:
         """
@@ -536,8 +548,8 @@ class ExcelProcessor:
         # 询问是否需要去重
         print("🤔 是否需要去重？")
         print("📝 去重将删除重复的记录，保留第一条")
-        dedup_choice = input("请选择 (y/n，默认n): ").strip().lower()
-        self.deduplicate = dedup_choice in ['y', 'yes', '是']
+        dedup_choice = input("请选择 (y/n，默认y): ").strip().lower()
+        self.deduplicate = dedup_choice not in ['n', 'no', '否']
         
         if not self.deduplicate:
             print("✅ 已选择不去重，将保留所有记录")
@@ -693,21 +705,7 @@ class ExcelProcessor:
                 print(f"⚠️  过滤掉 {before_filter - after_filter} 条学号为空的记录")
                 print(f"✅ 过滤后总行数: {len(combined_df)}")
         
-        # 字段补充处理
-        if self.enable_field_supplement and self.field_mappings:
-            print(f"\n🔄 正在补充缺失字段...")
-            combined_df = self.supplement_fields(
-                combined_df, 
-                self.field_mappings, 
-                self.field_default_values, 
-                self.link_field
-            )
-            
-            # 显示补充统计信息
-            print(f"\n📊 字段补充完成")
-            for field, mapping in self.field_mappings.items():
-                if mapping:
-                    print(f"  • 字段 '{field}': 构建了 {len(mapping)} 个映射关系")
+
         
         # 去重处理
         if deduplicate and dedup_fields:
@@ -800,24 +798,7 @@ class ExcelProcessor:
                     len(df) - len(df.drop_duplicates(subset=self.dedup_fields)) if self.deduplicate and self.dedup_fields else 0
                 ]
                 
-                # 添加字段补充统计
-                if self.enable_field_supplement:
-                    stats_items.extend([
-                        '是否启用字段补充',
-                        '关联字段',
-                        '补充字段数',
-                        '字段补充成功率'
-                    ])
-                    # 计算补充成功率（这里简化处理，实际应该统计具体的补充情况）
-                    stats_values.extend([
-                        '是',
-                        self.link_field,
-                        len(self.field_mappings),
-                        '100.0%'  # 简化显示
-                    ])
-                else:
-                    stats_items.append('是否启用字段补充')
-                    stats_values.append('否')
+
                 
                 stats_items.append('处理时间')
                 stats_values.append(pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -883,8 +864,6 @@ class ExcelProcessor:
         
         if mode == "merge":
             self.run_merge_mode()
-        elif mode == "sync":
-            self.run_sync_mode()
         elif mode == "multi_sync":
             self.run_multi_sync_mode()
         else:
@@ -895,17 +874,11 @@ class ExcelProcessor:
         print("=" * 60)
         print("🎯 Excel数据同步工具")
         print("📋 功能：将一个或者多个Excel文件的数据同步到另一个文件")
+        print("💡 提示：支持单个或多个源文件同步到目标文件")
         print("=" * 60)
         
-        # 选择同步模式
-        mode = self.select_sync_mode()
-        
-        if mode == "sync":
-            self.run_sync_mode()
-        elif mode == "multi_sync":
-            self.run_multi_sync_mode()
-        else:
-            print("👋 程序退出")
+        # 直接使用多源同步模式（支持单个或多个源文件）
+        self.run_multi_sync_mode()
     
     def select_operation_mode(self) -> str:
         """
@@ -926,46 +899,13 @@ class ExcelProcessor:
                 print("✅ 已选择：合并模式")
                 return "merge"
             elif choice == "2":
-                # 进一步选择同步模式
-                print("\n请选择同步模式：")
-                print("1. 源文件到目标文件（单个源文件同步）")
-                print("2. 多个源文件到目标文件（多个源文件同步）")
-                
-                sync_choice = input("\n请选择 (1/2): ").strip()
-                if sync_choice == "1":
-                    print("✅ 已选择：单源同步模式")
-                    return "sync"
-                elif sync_choice == "2":
-                    print("✅ 已选择：多源同步模式")
-                    return "multi_sync"
-                else:
-                    print("❌ 无效选择，请输入 1 或 2")
-                    continue
-            else:
-                print("❌ 无效选择，请输入 1 或 2")
-    
-    def select_sync_mode(self) -> str:
-        """
-        选择同步模式（专门用于同步功能）
-        
-        Returns:
-            str: 同步模式 ("sync" 或 "multi_sync")
-        """
-        print("\n请选择同步模式：")
-        print("1. 源文件到目标文件（单个源文件同步）")
-        print("2. 多个源文件到目标文件（多个源文件同步）")
-        
-        while True:
-            choice = input("\n请选择 (1/2): ").strip()
-            if choice == "1":
-                print("✅ 已选择：单源同步模式")
-                return "sync"
-            elif choice == "2":
-                print("✅ 已选择：多源同步模式")
+                print("✅ 已选择：Excel数据同步")
+                print("💡 提示：支持单个或多个源文件同步到目标文件")
                 return "multi_sync"
             else:
                 print("❌ 无效选择，请输入 1 或 2")
     
+
     def run_merge_mode(self):
         """运行合并模式"""
         print("\n🔄 启动合并模式...")
@@ -992,41 +932,7 @@ class ExcelProcessor:
             if not selected_fields:
                 print("❌ 未选择任何字段，程序退出")
                 return
-            
-            # 3.5. 字段补充配置
-            field_analysis_result = self.analyze_field_supplement_situation(files, selected_fields)
-            self.enable_field_supplement, self.field_mappings, self.field_default_values, self.link_field = self.configure_field_supplement(field_analysis_result, selected_fields)
-            
-            if self.enable_field_supplement:
-                # 为每个需要补充的字段构建映射
-                field_analysis = field_analysis_result['field_analysis']
-                self.field_mappings = {}  # 初始化字段映射字典
-                
-                for field in selected_fields:
-                    if field_analysis[field]['total_files_missing_field'] > 0:
-                        # 构建该字段的映射
-                        files_with_field = field_analysis[field]['files_with_field']
-                        if files_with_field:
-                            self.field_mappings[field] = self.build_field_mapping(files_with_field, field, self.link_field)
-                
-                # 确保所有需要的字段都被选中
-                for field in selected_fields:
-                    if field_analysis[field]['total_files_missing_field'] > 0:
-                        # 检查字段是否已在选择列表中
-                        field_variants = self.get_field_variants(field)
-                        field_exists = field in selected_fields or any(variant in selected_fields for variant in field_variants)
-                        
-                        if not field_exists:
-                            # 选择最常用的变体
-                            standard_count = sum(1 for f in files if field in self.get_file_fields(f))
-                            star_count = sum(1 for f in files if f'*{field}' in self.get_file_fields(f))
-                            
-                            if star_count >= standard_count:
-                                selected_fields.append(f'*{field}')
-                                print(f"📝 自动添加*{field}字段到选择列表")
-                            else:
-                                selected_fields.append(field)
-                                print(f"📝 自动添加{field}字段到选择列表")
+
             
             # 4. 去重配置
             deduplicate, dedup_fields = self.configure_deduplication()
@@ -1053,8 +959,7 @@ class ExcelProcessor:
                 print(f"📋 选择字段数: {len(selected_fields)}")
                 if deduplicate and dedup_fields:
                     print(f"🔍 去重字段: {', '.join(dedup_fields)}")
-                if self.enable_field_supplement:
-                    print(f"🔧 字段补充: 已启用，关联字段 '{self.link_field}'，补充字段数 {len(self.field_mappings)} 个")
+
             
         except KeyboardInterrupt:
             print("\n\n⚠️  程序被用户中断")
@@ -1068,6 +973,11 @@ class ExcelProcessor:
         try:
             # 1. 文件角色选择
             self.select_file_roles()
+            
+            # 1.5. 文件备份
+            if not self.backup_sync_files():
+                print("❌ 备份失败，程序退出")
+                return
             
             # 2. 关联字段选择
             self.select_link_field()
@@ -1217,6 +1127,78 @@ class ExcelProcessor:
         
         self.output_directory = output_dir
     
+    def ask_for_replacement(self, field_name: str, link_value: str, current_value, new_value) -> bool:
+        """
+        询问用户是否要替换已有数据
+        
+        Args:
+            field_name: 字段名称
+            link_value: 关联字段的值
+            current_value: 当前值
+            new_value: 新值
+            
+        Returns:
+            是否要替换
+        """
+        if self.replacement_mode == "replace_all":
+            return True
+        elif self.replacement_mode == "skip_all":
+            return False
+        elif self.replacement_mode == "ask":
+            # 检查是否已经对此字段做过决策
+            decision_key = f"{field_name}"
+            if decision_key in self.replacement_decisions:
+                return self.replacement_decisions[decision_key]
+            
+            print(f"\n{'🔄' + '='*60}")
+            print(f"⚠️  发现数据冲突！")
+            print(f"{'🔄' + '='*60}")
+            print(f"🔑 关联字段值: {link_value}")
+            print(f"📝 字段名称: {field_name}")
+            print(f"📄 当前值: {current_value}")
+            print(f"🆕 新值: {new_value}")
+            
+            print(f"\n🤔 请选择处理方式:")
+            print(f"  1. 替换（使用新值）")
+            print(f"  2. 跳过（保留当前值）")
+            print(f"  3. 对此字段总是替换")
+            print(f"  4. 对此字段总是跳过")
+            print(f"  5. 对所有字段总是替换")
+            print(f"  6. 对所有字段总是跳过")
+            
+            while True:
+                try:
+                    choice = input("\n请选择 (1-6): ").strip()
+                    
+                    if choice == "1":
+                        return True
+                    elif choice == "2":
+                        return False
+                    elif choice == "3":
+                        self.replacement_decisions[decision_key] = True
+                        print(f"✅ 已设置：字段 '{field_name}' 总是替换")
+                        return True
+                    elif choice == "4":
+                        self.replacement_decisions[decision_key] = False
+                        print(f"✅ 已设置：字段 '{field_name}' 总是跳过")
+                        return False
+                    elif choice == "5":
+                        self.replacement_mode = "replace_all"
+                        print(f"✅ 已设置：所有字段总是替换")
+                        return True
+                    elif choice == "6":
+                        self.replacement_mode = "skip_all"
+                        print(f"✅ 已设置：所有字段总是跳过")
+                        return False
+                    else:
+                        print("❌ 请输入 1-6 之间的数字")
+                        
+                except KeyboardInterrupt:
+                    print("\n⚠️  用户中断，跳过此次替换")
+                    return False
+        
+        return False
+
     def configure_unmatched_handling(self):
         """配置未匹配记录的处理方式"""
         print(f"\n=== 步骤3.6: 未匹配记录处理配置 ===")
@@ -1234,24 +1216,50 @@ class ExcelProcessor:
             elif choice == "2":
                 self.unmatched_handling = "default"
                 print("✅ 已选择：未匹配记录使用默认值")
-                self.set_default_values()
+                
+                # 配置每个更新字段的默认值
+                print(f"\n📝 请为每个更新字段设置默认值:")
+                for field in self.update_fields:
+                    while True:
+                        default_value = input(f"请输入字段 '{field}' 的默认值（直接回车表示空值）: ").strip()
+                        # 允许空值作为默认值
+                        self.default_values[field] = default_value if default_value else ""
+                        print(f"✅ 字段 '{field}' 的默认值已设置为: '{self.default_values[field]}'")
+                        break
+                
+                print(f"\n📋 默认值配置完成:")
+                for field, value in self.default_values.items():
+                    display_value = value if value else "<空值>"
+                    print(f"  • {field}: {display_value}")
                 break
             else:
                 print("❌ 无效选择，请输入 1 或 2")
-    
-    def set_default_values(self):
-        """为每个更新字段设置默认值"""
-        print(f"\n📝 请为每个更新字段设置默认值:")
         
-        for field in self.update_fields:
-            while True:
-                default_value = input(f"请输入字段 '{field}' 的默认值: ").strip()
-                if default_value:
-                    self.default_values[field] = default_value
-                    print(f"✅ 字段 '{field}' 默认值设置为: {default_value}")
-                    break
-                else:
-                    print("❌ 默认值不能为空，请重新输入")
+        # 配置替换模式
+        print(f"\n=== 步骤3.7: 数据替换策略配置 ===")
+        print("🤔 当目标Excel中已有数据时，您希望如何处理？")
+        print("1. 每次询问是否替换（推荐）")
+        print("2. 自动替换所有数据")
+        print("3. 跳过所有已有数据")
+        
+        while True:
+            choice = input("请选择替换策略 (1/2/3): ").strip()
+            if choice == "1":
+                self.replacement_mode = "ask"
+                print("✅ 已选择：遇到已有数据时询问是否替换")
+                break
+            elif choice == "2":
+                self.replacement_mode = "replace_all"
+                print("✅ 已选择：自动替换所有已有数据")
+                break
+            elif choice == "3":
+                self.replacement_mode = "skip_all"
+                print("✅ 已选择：跳过所有已有数据")
+                break
+            else:
+                print("❌ 无效选择，请输入 1、2 或 3")
+    
+
     
     def select_update_fields(self):
         """更新字段选择"""
@@ -1332,9 +1340,6 @@ class ExcelProcessor:
                 print("❌ 用户取消操作")
                 return
             
-            # 备份目标文件
-            self.backup_target_file()
-            
             # 执行同步
             updated_df = self.perform_sync(source_df, target_df)
             
@@ -1347,29 +1352,150 @@ class ExcelProcessor:
         except Exception as e:
             print(f"❌ 同步执行出错: {str(e)}")
     
-    def backup_target_file(self):
-        """备份目标文件"""
+    def find_actual_field_name(self, df: pd.DataFrame, target_field: str) -> str:
+        """
+        查找数据框中实际的字段名称，支持智能匹配
+        
+        Args:
+            df: 数据框
+            target_field: 目标字段名
+            
+        Returns:
+            实际的字段名称，如果找不到返回None
+        """
+        if not hasattr(df, 'columns'):
+            return None
+            
+        columns = list(df.columns)
+        
+        # 1. 精确匹配
+        if target_field in columns:
+            return target_field
+        
+        # 2. 大小写不敏感匹配
+        for col in columns:
+            if str(col).lower() == str(target_field).lower():
+                return col
+        
+        # 3. 去除空格后匹配
+        target_clean = str(target_field).strip()
+        for col in columns:
+            if str(col).strip() == target_clean:
+                return col
+        
+        # 4. 包含匹配（目标字段包含在列名中）
+        for col in columns:
+            if target_clean in str(col) or str(col) in target_clean:
+                return col
+        
+        # 5. 相似度匹配（简单版本）
+        from difflib import SequenceMatcher
+        best_match = None
+        best_ratio = 0.8  # 相似度阈值
+        
+        for col in columns:
+            ratio = SequenceMatcher(None, str(target_field).lower(), str(col).lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = col
+        
+        return best_match
+
+    def backup_sync_files(self) -> bool:
+        """
+        备份同步相关的文件（源文件和目标文件）
+        
+        Returns:
+            备份是否成功
+        """
+        print(f"\n=== 文件备份 ===")
+        
+        # 询问是否要备份
+        backup_choice = input("🤔 是否要备份相关Excel文件？(y/n，默认y): ").strip().lower()
+        if backup_choice in ['n', 'no', '否']:
+            print("✅ 跳过备份，直接执行同步")
+            return True
+        
+        # 创建备份目录
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = f"backup_{timestamp}"
+        
         try:
-            # 创建备份目录
-            backup_dir = "backup"
             if not os.path.exists(backup_dir):
                 os.makedirs(backup_dir)
             
-            # 生成备份文件名
-            filename = os.path.basename(self.target_file)
-            name, ext = os.path.splitext(filename)
-            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-            backup_filename = f"{name}_backup_{timestamp}{ext}"
-            backup_path = os.path.join(backup_dir, backup_filename)
+            print(f"📁 创建备份目录: {backup_dir}")
             
-            # 复制文件
-            import shutil
-            shutil.copy2(self.target_file, backup_path)
+            # 收集要备份的文件
+            files_to_backup = []
             
-            print(f"✅ 已备份目标文件: {backup_filename}")
+            # 添加源文件
+            if hasattr(self, 'source_file') and self.source_file:
+                files_to_backup.append(('源文件', self.source_file))
+            
+            # 添加目标文件
+            if hasattr(self, 'target_file') and self.target_file:
+                files_to_backup.append(('目标文件', self.target_file))
+            
+            # 如果是多源同步，添加所有源文件
+            if hasattr(self, 'source_files') and self.source_files:
+                for i, source_file in enumerate(self.source_files, 1):
+                    files_to_backup.append((f'源文件{i}', source_file))
+            
+            if not files_to_backup:
+                print("⚠️  没有找到需要备份的文件")
+                return True
+            
+            # 备份文件
+            backup_success = 0
+            backup_failed = 0
+            
+            for file_type, file_path in files_to_backup:
+                try:
+                    if not os.path.exists(file_path):
+                        print(f"⚠️  {file_type}不存在: {file_path}")
+                        continue
+                    
+                    filename = os.path.basename(file_path)
+                    backup_path = os.path.join(backup_dir, f"{file_type}_{filename}")
+                    
+                    # 如果备份目录中已有同名文件，添加序号
+                    counter = 1
+                    original_backup_path = backup_path
+                    while os.path.exists(backup_path):
+                        name, ext = os.path.splitext(original_backup_path)
+                        backup_path = f"{name}_{counter}{ext}"
+                        counter += 1
+                    
+                    # 复制文件
+                    import shutil
+                    shutil.copy2(file_path, backup_path)
+                    print(f"✅ 已备份{file_type}: {filename} -> {os.path.basename(backup_path)}")
+                    backup_success += 1
+                    
+                except Exception as e:
+                    print(f"❌ 备份{file_type}失败: {os.path.basename(file_path)} - {str(e)}")
+                    backup_failed += 1
+            
+            print(f"\n📊 备份结果:")
+            print(f"  ✅ 成功备份: {backup_success} 个文件")
+            if backup_failed > 0:
+                print(f"  ❌ 备份失败: {backup_failed} 个文件")
+            print(f"  📁 备份位置: {os.path.abspath(backup_dir)}")
+            
+            if backup_failed > 0:
+                continue_choice = input("\n⚠️  部分文件备份失败，是否继续同步？(y/n，默认y): ").strip().lower()
+                if continue_choice in ['n', 'no', '否']:
+                    print("❌ 用户选择退出")
+                    return False
+            
+            return True
             
         except Exception as e:
-            print(f"⚠️  备份文件时出错: {str(e)}")
+            print(f"❌ 创建备份目录失败: {str(e)}")
+            continue_choice = input("⚠️  备份失败，是否继续同步？(y/n，默认n): ").strip().lower()
+            return continue_choice in ['y', 'yes', '是']
     
     def perform_sync(self, source_df: pd.DataFrame, target_df: pd.DataFrame) -> pd.DataFrame:
         """执行同步操作"""
@@ -1441,14 +1567,43 @@ class ExcelProcessor:
                         if pd.isna(value) or str(value).strip() == '':
                             continue
                         
+                        # 检查目标字段是否已有值
+                        current_value = updated_df.at[idx, target_field]
+                        has_current_value = (
+                            not pd.isna(current_value) and 
+                            str(current_value).strip() != '' and 
+                            str(current_value).strip().lower() != 'nan'
+                        )
+                        
+                        # 如果目标字段已有值，检查是否需要替换
+                        if has_current_value:
+                            # 如果当前值和新值相同，直接跳过
+                            if str(current_value).strip() == str(value).strip():
+                                continue  # 值相同，无需更新
+                            
+                            should_replace = self.ask_for_replacement(
+                                target_field, 
+                                link_value, 
+                                current_value, 
+                                value
+                            )
+                            if not should_replace:
+                                continue  # 跳过此字段的更新
+                        
                         # 确保目标列是对象类型，以保持字符串格式
                         if updated_df[target_field].dtype in ['int64', 'float64']:
                             updated_df[target_field] = updated_df[target_field].astype('object')
                         
-                        # 直接赋值，保持原始字符串格式
+                        # 执行更新，保持原始字符串格式
                         updated_df.at[idx, target_field] = str(value)
+                        
                     except Exception as e:
                         print(f"⚠️  更新字段 {target_field} 时出错: {str(e)}")
+                        print(f"   📍 关联字段值: {link_value}")
+                        print(f"   📄 当前值: {current_value}")
+                        print(f"   🆕 新值: {value}")
+                        print(f"   🔧 字段类型: {type(value)}")
+                        failed_count += 1
                         continue
                 updated_count += 1
             else:
@@ -1461,9 +1616,24 @@ class ExcelProcessor:
                             if updated_df[target_field].dtype in ['int64', 'float64']:
                                 updated_df[target_field] = updated_df[target_field].astype('object')
                             
-                            # 设置默认值
-                            default_value = self.default_values.get(target_field, "")
-                            updated_df.at[idx, target_field] = default_value
+                            # 使用用户配置的默认值
+                            # 从字段映射中获取原始字段名
+                            original_field = None
+                            for orig_field, mapped_field in update_pairs:
+                                if mapped_field == target_field:
+                                    original_field = orig_field
+                                    break
+                            
+                            # 获取用户设置的默认值
+                            default_value = self.default_values.get(original_field, "")
+                            # 确保数据类型兼容，先将列转换为object类型
+                            if updated_df[target_field].dtype != 'object':
+                                updated_df[target_field] = updated_df[target_field].astype('object')
+                            
+                            if pd.isna(default_value) or default_value == '':
+                                updated_df.at[idx, target_field] = None
+                            else:
+                                updated_df.at[idx, target_field] = str(default_value)
                         except Exception as e:
                             print(f"⚠️  设置字段 {target_field} 默认值时出错: {str(e)}")
                             continue
@@ -1486,6 +1656,15 @@ class ExcelProcessor:
         print(f"  未匹配记录: {unmatched_count} 个")
         print(f"  失败记录: {failed_count} 个")
         print(f"  成功率: {self.sync_stats['sync_success_rate']:.1f}%")
+        
+        if failed_count > 0:
+            print(f"\n💡 失败记录说明:")
+            print(f"  • 失败记录通常由以下原因造成:")
+            print(f"    - 数据类型不匹配")
+            print(f"    - 字段值包含特殊字符")
+            print(f"    - 源数据格式异常")
+            print(f"  • 请查看上方的详细错误信息进行排查")
+            print(f"  • 成功更新的 {updated_count} 条记录已正常处理")
         
         return updated_df
     
@@ -1632,399 +1811,11 @@ class ExcelProcessor:
         except Exception as e:
             print(f"⚠️  保存同步报告时出错: {str(e)}")
 
-    def analyze_field_supplement_situation(self, files: List[str], selected_fields: List[str]) -> Dict:
-        """
-        分析字段补充情况
-        
-        Args:
-            files: 文件列表
-            selected_fields: 选中的字段列表
-            
-        Returns:
-            分析结果字典
-        """
-        print(f"\n🔍 分析字段补充情况...")
-        
-        field_analysis = {}
-        files_with_all_fields = []
-        files_missing_fields = {}
-        
-        for field in selected_fields:
-            field_analysis[field] = {
-                'files_with_field': [],
-                'files_missing_field': [],
-                'total_files_with_field': 0,
-                'total_files_missing_field': 0
-            }
-        
-        for file in files:
-            try:
-                df = pd.read_excel(file)
-                file_fields = list(df.columns)
-                
-                # 检查每个字段
-                file_has_all_fields = True
-                missing_fields_in_file = []
-                
-                for field in selected_fields:
-                    # 检查字段是否存在（包括变体）
-                    field_exists = False
-                    if field in file_fields:
-                        field_exists = True
-                    else:
-                        # 检查变体
-                        field_variants = self.get_field_variants(field)
-                        for variant in field_variants:
-                            if variant in file_fields:
-                                field_exists = True
-                                break
-                    
-                    if field_exists:
-                        field_analysis[field]['files_with_field'].append(file)
-                        field_analysis[field]['total_files_with_field'] += 1
-                    else:
-                        field_analysis[field]['files_missing_field'].append(file)
-                        field_analysis[field]['total_files_missing_field'] += 1
-                        missing_fields_in_file.append(field)
-                        file_has_all_fields = False
-                
-                if file_has_all_fields:
-                    files_with_all_fields.append(file)
-                else:
-                    files_missing_fields[file] = missing_fields_in_file
-                    
-            except Exception as e:
-                print(f"⚠️  分析文件 '{os.path.basename(file)}' 时出错: {str(e)}")
-                continue
-        
-        # 显示分析结果
-        for file in files:
-            try:
-                df = pd.read_excel(file)
-                file_fields = list(df.columns)
-                
-                missing_fields = []
-                for field in selected_fields:
-                    field_exists = False
-                    if field in file_fields:
-                        field_exists = True
-                    else:
-                        field_variants = self.get_field_variants(field)
-                        for variant in field_variants:
-                            if variant in file_fields:
-                                field_exists = True
-                                break
-                    
-                    if not field_exists:
-                        missing_fields.append(field)
-                
-                if not missing_fields:
-                    print(f"✅ {os.path.basename(file)}: 包含所有必需字段")
-                else:
-                    print(f"⚠️  {os.path.basename(file)}: 缺少字段 {', '.join(missing_fields)}")
-                    
-            except Exception as e:
-                print(f"⚠️  分析文件 '{os.path.basename(file)}' 时出错: {str(e)}")
-                continue
-        
-        return {
-            'field_analysis': field_analysis,
-            'files_with_all_fields': files_with_all_fields,
-            'files_missing_fields': files_missing_fields,
-            'total_files': len(files)
-        }
+
     
-    def get_field_variants(self, field: str) -> List[str]:
-        """
-        获取字段的变体名称
-        
-        Args:
-            field: 原始字段名
-            
-        Returns:
-            字段变体列表
-        """
-        variants = []
-        
-        # 学号字段变体
-        if field == '学号':
-            variants = ['*学号']
-        elif field == '*学号':
-            variants = ['学号']
-        
-        # 学生姓名字段变体
-        elif field == '学生姓名':
-            variants = ['*学生姓名']
-        elif field == '*学生姓名':
-            variants = ['学生姓名']
-        
-        # 其他字段的通用变体（带*前缀）
-        elif not field.startswith('*'):
-            variants = [f'*{field}']
-        else:
-            variants = [field[1:]]  # 去掉*前缀
-        
-        return variants
+
     
-    def configure_field_supplement(self, analysis_result: Dict, selected_fields: List[str]) -> Tuple[bool, Dict[str, str], Dict[str, str], str]:
-        """
-        配置字段补充功能
-        
-        Args:
-            analysis_result: 分析结果
-            selected_fields: 选中的字段列表
-            
-        Returns:
-            (是否启用补充功能, 字段映射字典, 默认值字典, 关联字段)
-        """
-        field_analysis = analysis_result['field_analysis']
-        files_missing_fields = analysis_result['files_missing_fields']
-        
-        # 检查是否有需要补充的字段
-        fields_need_supplement = []
-        for field in selected_fields:
-            if field_analysis[field]['total_files_missing_field'] > 0:
-                fields_need_supplement.append(field)
-        
-        if not fields_need_supplement:
-            print(f"\n✅ 所有文件都包含所有必需字段，无需补充")
-            return False, {}, {}, '学号'
-        
-        print(f"\n=== 字段补充配置 ===")
-        print(f"📊 分析结果:")
-        print(f"  • 包含所有必需字段的文件: {len(analysis_result['files_with_all_fields'])} 个")
-        print(f"  • 需要补充字段的文件: {len(files_missing_fields)} 个")
-        
-        for field in fields_need_supplement:
-            missing_count = field_analysis[field]['total_files_missing_field']
-            total_count = analysis_result['total_files']
-            print(f"  • 缺少字段 '{field}' 的文件: {missing_count}/{total_count} 个")
-        
-        print(f"\n🤔 检测到部分文件缺少字段，是否启用字段补充功能？")
-        print(f"📝 补充功能将从其他文件中根据关联字段匹配获取缺失字段")
-        
-        choice = input("请选择 (y/n，默认y): ").strip().lower()
-        enable_supplement = choice not in ['n', 'no', '否']
-        
-        if not enable_supplement:
-            print(f"✅ 已选择不启用字段补充功能")
-            return False, {}, {}, '学号'
-        
-        # 选择关联字段
-        print(f"\n🔗 请选择用于匹配的关联字段:")
-        print(f"📋 可用字段: {', '.join(selected_fields)}")
-        print(f"📝 输入字段名称（如：学号、学生姓名等）")
-        print(f"📝 建议选择在所有文件中都存在且唯一性较好的字段作为关联字段")
-        
-        link_field = input("关联字段（默认：学号）: ").strip()
-        if not link_field:
-            link_field = '学号'
-        
-        # 验证关联字段是否在选中字段中
-        if link_field not in selected_fields:
-            print(f"⚠️  关联字段 '{link_field}' 不在选中字段中，将使用默认字段 '学号'")
-            link_field = '学号'
-        
-        print(f"✅ 已设置关联字段: {link_field}")
-        
-        # 为每个需要补充的字段设置默认值
-        default_values = {}
-        
-        for field in fields_need_supplement:
-            print(f"\n📝 请输入字段 '{field}' 未找到匹配时使用的默认值")
-            default_value = input(f"默认值（默认：未知{field}）: ").strip()
-            if not default_value:
-                default_value = f"未知{field}"
-            default_values[field] = default_value
-            print(f"✅ 已设置字段 '{field}' 默认值: {default_value}")
-        
-        return True, {}, default_values, link_field
-    
-    def build_field_mapping(self, files_with_field: List[str], target_field: str, link_field: str = '学号') -> Dict[str, str]:
-        """
-        构建字段映射关系
-        
-        Args:
-            files_with_field: 包含目标字段的文件列表
-            target_field: 目标字段名
-            link_field: 关联字段名（默认学号）
-            
-        Returns:
-            映射字典 {link_value: target_value}
-        """
-        mapping = {}
-        
-        print(f"\n🔄 构建{link_field}到{target_field}的映射...")
-        
-        for file in files_with_field:
-            try:
-                df = pd.read_excel(file)
-                
-                # 确定关联字段和目标字段的实际名称
-                actual_link_field = self.find_actual_field_name(df, link_field)
-                actual_target_field = self.find_actual_field_name(df, target_field)
-                
-                if not actual_link_field or not actual_target_field:
-                    continue
-                
-                # 构建映射
-                for _, row in df.iterrows():
-                    link_value = str(row[actual_link_field]).strip()
-                    target_value = str(row[actual_target_field]).strip()
-                    
-                    if pd.notna(link_value) and link_value != '' and pd.notna(target_value) and target_value != '':
-                        # 如果关联值已存在，检查值是否一致
-                        if link_value in mapping:
-                            if mapping[link_value] != target_value:
-                                print(f"⚠️  {link_field} {link_value} 在不同文件中有不同的{target_field}值: {mapping[link_value]} vs {target_value}")
-                                # 保留第一个值，跳过后续的
-                                continue
-                        else:
-                            mapping[link_value] = target_value
-                
-                print(f"📊 {os.path.basename(file)}: 添加了 {len(df)} 个映射关系")
-                
-            except Exception as e:
-                print(f"⚠️  构建映射时出错 '{os.path.basename(file)}': {str(e)}")
-                continue
-        
-        print(f"✅ 总共构建了 {len(mapping)} 个{link_field}-{target_field}映射关系")
-        return mapping
-    
-    def find_actual_field_name(self, df: pd.DataFrame, field: str) -> str:
-        """
-        在数据框中查找字段的实际名称（包括变体）
-        
-        Args:
-            df: 数据框
-            field: 目标字段名
-            
-        Returns:
-            实际字段名或None
-        """
-        if field in df.columns:
-            return field
-        
-        # 检查变体
-        variants = self.get_field_variants(field)
-        for variant in variants:
-            if variant in df.columns:
-                return variant
-        
-        return None
-    
-    def supplement_fields(self, df: pd.DataFrame, field_mappings: Dict[str, Dict[str, str]], 
-                         default_values: Dict[str, str], link_field: str = '学号') -> pd.DataFrame:
-        """
-        为数据框补充缺失字段
-        
-        Args:
-            df: 数据框
-            field_mappings: 字段映射字典 {field_name: {link_value: target_value}}
-            default_values: 默认值字典 {field_name: default_value}
-            link_field: 关联字段名
-            
-        Returns:
-            补充后的数据框
-        """
-        # 确定关联字段的实际名称
-        actual_link_field = self.find_actual_field_name(df, link_field)
-        if not actual_link_field:
-            print(f"⚠️  数据框不包含关联字段 '{link_field}'，将使用默认值填充缺失字段")
-            # 即使没有关联字段，也要创建缺失的字段并填充默认值
-            for target_field in field_mappings.keys():
-                if target_field not in df.columns:
-                    df[target_field] = default_values.get(target_field, f"未知{target_field}")
-                    print(f"📝 创建字段: {target_field} (使用默认值)")
-            return df
-        
-        # 为每个需要补充的字段进行处理
-        for target_field, mapping in field_mappings.items():
-            # 确定目标字段的实际名称
-            actual_target_field = self.find_actual_field_name(df, target_field)
-            
-            # 如果目标字段不存在，创建它并填充默认值
-            if not actual_target_field:
-                actual_target_field = target_field
-                df[actual_target_field] = default_values.get(target_field, f"未知{target_field}")
-                print(f"📝 创建字段: {actual_target_field}")
-            else:
-                # 检查是否需要补充
-                missing_values = df[actual_target_field].isna() | (df[actual_target_field].astype(str).str.strip() == '')
-                if not missing_values.any():
-                    print(f"✅ 字段 '{target_field}' 已完整，无需补充")
-                    continue
-            
-            # 补充字段值
-            supplemented_count = 0
-            successful_matches = 0
-            default_used = 0
-            
-            for idx, row in df.iterrows():
-                link_value = str(row[actual_link_field]).strip()
-                current_value = str(row[actual_target_field]).strip()
-                
-                # 跳过空关联值
-                if pd.isna(link_value) or link_value == '':
-                    continue
-                
-                # 检查当前值是否为空或默认值
-                if pd.isna(current_value) or current_value == '' or current_value == default_values.get(target_field, ''):
-                    # 尝试从映射中获取值
-                    if link_value in mapping:
-                        df.at[idx, actual_target_field] = mapping[link_value]
-                        successful_matches += 1
-                    else:
-                        # 尝试模糊匹配
-                        matched_value = self.fuzzy_match_field_value(link_value, mapping)
-                        if matched_value:
-                            df.at[idx, actual_target_field] = matched_value
-                            successful_matches += 1
-                        else:
-                            df.at[idx, actual_target_field] = default_values.get(target_field, f"未知{target_field}")
-                            default_used += 1
-                    supplemented_count += 1
-            
-            if supplemented_count > 0:
-                print(f"📊 字段 '{target_field}' 补充统计: 成功匹配 {successful_matches} 个，使用默认值 {default_used} 个")
-        
-        return df
-    
-    def fuzzy_match_field_value(self, link_value: str, mapping: Dict[str, str]) -> str:
-        """
-        模糊匹配字段值
-        
-        Args:
-            link_value: 关联值
-            mapping: 映射字典
-            
-        Returns:
-            匹配的值或None
-        """
-        # 精确匹配
-        if link_value in mapping:
-            return mapping[link_value]
-        
-        # 对于数字字段，使用更严格的匹配规则
-        if link_value.isdigit():
-            # 只允许最后一位数字的差异，且差异不能超过2
-            for map_key, map_value in mapping.items():
-                if map_key.isdigit() and len(link_value) == len(map_key):
-                    # 检查除了最后一位外的其他位是否相同
-                    if link_value[:-1] == map_key[:-1]:
-                        # 检查最后一位的差异
-                        last_diff = abs(int(link_value[-1]) - int(map_key[-1]))
-                        if last_diff <= 2:  # 允许最后一位差异不超过2
-                            return map_value
-        else:
-            # 对于非数字字段，使用原来的模糊匹配
-            for map_key, map_value in mapping.items():
-                if len(link_value) == len(map_key):
-                    diff_count = sum(1 for a, b in zip(link_value, map_key) if a != b)
-                    if diff_count <= 1:  # 允许一位字符的差异
-                        return map_value
-        
-        return None
+
 
     def run_multi_sync_mode(self):
         """运行多源同步模式"""
@@ -2033,6 +1824,11 @@ class ExcelProcessor:
         try:
             # 1. 文件选择
             self.select_multi_sync_files()
+            
+            # 1.5. 文件备份
+            if not self.backup_sync_files():
+                print("❌ 备份失败，程序退出")
+                return
             
             # 2. 关联字段选择
             self.select_multi_sync_link_field()
@@ -2124,7 +1920,7 @@ class ExcelProcessor:
                 print("❌ 请输入有效的数字")
     
     def select_multi_sync_link_field(self):
-        """多源同步关联字段选择"""
+        """多源同步关联字段选择 - 以目标文件为主导的新逻辑"""
         print(f"\n=== 步骤2: 关联字段选择 ===")
         
         try:
@@ -2132,106 +1928,173 @@ class ExcelProcessor:
             target_df = pd.read_excel(self.target_file)
             target_columns = list(target_df.columns)
             
-            # 读取所有源文件，找出共同的字段
-            all_source_columns = set()
-            for source_file in self.source_files:
-                source_df = pd.read_excel(source_file)
-                all_source_columns.update(source_df.columns)
-            
-            # 找出目标文件和所有源文件共有的字段
-            common_fields = list(set(target_columns) & all_source_columns)
-            
-            if not common_fields:
-                print("❌ 目标文件和源文件没有共同的字段，无法进行同步")
+            if not target_columns:
+                print("❌ 目标文件没有任何字段")
                 return
             
-            # 智能检测关联字段
-            print(f"🔍 智能检测关联字段...")
+            # 第一步：从目标文件选择关联字段
+            print(f"🎯 步骤1: 从目标文件选择关联字段")
+            print(f"📋 目标文件 '{os.path.basename(self.target_file)}' 的所有字段:")
             
-            # 优先选择常见的关键字段
+            # 智能推荐关联字段
             priority_fields = ['学号', '教工号', '工号', '编号', 'ID', 'id', 'student_id', 'teacher_id']
-            detected_field = None
+            recommended_field = None
             
             for priority_field in priority_fields:
-                for field in common_fields:
+                for field in target_columns:
                     if priority_field in field or field in priority_field:
-                        detected_field = field
+                        recommended_field = field
                         break
-                if detected_field:
+                if recommended_field:
                     break
             
-            # 检测源文件之间的字段模糊匹配
-            print(f"🔍 检测源文件字段匹配情况...")
-            source_files_data = {}
-            for source_file in self.source_files:
-                source_df = pd.read_excel(source_file)
-                source_files_data[os.path.basename(source_file)] = list(source_df.columns)
-            
-            # 检查字段模糊匹配
-            fuzzy_matches = []
-            for i, file1 in enumerate(self.source_files):
-                for j, file2 in enumerate(self.source_files):
-                    if i < j:  # 避免重复检查
-                        file1_name = os.path.basename(file1)
-                        file2_name = os.path.basename(file2)
-                        file1_fields = source_files_data[file1_name]
-                        file2_fields = source_files_data[file2_name]
-                        
-                        # 检查字段模糊匹配
-                        for field1 in file1_fields:
-                            for field2 in file2_fields:
-                                if field1 != field2 and self.calculate_similarity(field1, field2) >= 0.8:
-                                    fuzzy_matches.append({
-                                        'file1': file1_name,
-                                        'file2': file2_name,
-                                        'field1': field1,
-                                        'field2': field2,
-                                        'similarity': self.calculate_similarity(field1, field2)
-                                    })
-            
-            # 显示模糊匹配结果
-            if fuzzy_matches:
-                print(f"💡 发现 {len(fuzzy_matches)} 个字段模糊匹配:")
-                for match in fuzzy_matches:
-                    print(f"  📋 {match['file1']} 的 '{match['field1']}' 与 {match['file2']} 的 '{match['field2']}' 相似度: {match['similarity']:.2f}")
-                print(f"💡 这些字段可能表示相同的数据，建议检查字段映射")
-            else:
-                print(f"✅ 未发现明显的字段模糊匹配")
-            
-            # 显示检测建议
-            if detected_field:
-                print(f"💡 建议选择关联字段: {detected_field}")
-            else:
-                print(f"💡 未检测到明显的关联字段，请手动选择")
-            
-            # 显示所有可选字段
-            print(f"📋 目标文件和源文件共有的字段:")
-            for i, field in enumerate(common_fields, 1):
-                if detected_field and field == detected_field:
+            # 显示目标文件字段
+            for i, field in enumerate(target_columns, 1):
+                if recommended_field and field == recommended_field:
                     print(f"{i:2d}. {field} (推荐)")
                 else:
                     print(f"{i:2d}. {field}")
             
-            # 让用户选择
-            print(f"\n📝 请选择用于匹配的关联字段:")
+            # 让用户选择目标关联字段
+            print(f"\n📝 请选择目标文件的关联字段:")
             while True:
                 try:
                     link_choice = input("请输入关联字段编号: ").strip()
                     link_index = int(link_choice) - 1
-                    if 0 <= link_index < len(common_fields):
-                        self.link_field = common_fields[link_index]
-                        print(f"✅ 关联字段: {self.link_field}")
+                    if 0 <= link_index < len(target_columns):
+                        self.link_field = target_columns[link_index]
+                        print(f"✅ 目标关联字段: {self.link_field}")
                         break
                     else:
                         print("❌ 字段编号超出范围，请重新选择")
                 except ValueError:
                     print("❌ 请输入有效的数字")
+            
+            # 第二步：为每个源文件建立字段映射
+            print(f"\n🔄 步骤2: 为每个源文件建立关联字段映射")
+            self.source_field_mapping = {}
+            
+            for source_file in self.source_files:
+                source_filename = os.path.basename(source_file)
+                print(f"\n📄 处理源文件: {source_filename}")
+                
+                try:
+                    source_df = pd.read_excel(source_file)
+                    source_columns = list(source_df.columns)
+                    
+                    if not source_columns:
+                        print(f"⚠️  源文件 '{source_filename}' 没有任何字段，跳过")
+                        continue
+                    
+                    # 尝试模糊匹配目标关联字段
+                    similar_fields = []
+                    for source_field in source_columns:
+                        similarity = self.calculate_similarity(self.link_field, source_field)
+                        if similarity >= 0.8:
+                            similar_fields.append((source_field, similarity))
+                    
+                    # 按相似度排序
+                    similar_fields.sort(key=lambda x: x[1], reverse=True)
+                    
+                    selected_source_field = None
+                    
+                    if similar_fields:
+                        print(f"🔍 找到与 '{self.link_field}' 相似的字段:")
+                        for i, (field, sim) in enumerate(similar_fields, 1):
+                            print(f"  {i}. {field} (相似度: {sim:.2f})")
+                        
+                        print(f"\n🤔 请选择:")
+                        print(f"  1. 使用相似字段 (输入编号，默认选择1)")
+                        print(f"  2. 手动选择其他字段 (输入 'm')")
+                        print(f"  3. 跳过此源文件 (输入 's')")
+                        
+                        while True:
+                            choice = input("请选择 (默认1): ").strip().lower()
+                            if not choice:  # 用户按回车，默认选择第一个相似字段
+                                choice = "1"
+                            
+                            if choice == 's':
+                                print(f"⏭️  跳过源文件 '{source_filename}'")
+                                break
+                            elif choice == 'm':
+                                # 手动选择
+                                selected_source_field = self._manual_select_source_field(source_columns, source_filename)
+                                break
+                            else:
+                                try:
+                                    choice_idx = int(choice) - 1
+                                    if 0 <= choice_idx < len(similar_fields):
+                                        selected_source_field = similar_fields[choice_idx][0]
+                                        print(f"✅ 选择了相似字段: {selected_source_field}")
+                                        break
+                                    else:
+                                        print("❌ 编号超出范围，请重新选择")
+                                except ValueError:
+                                    print("❌ 请输入有效的编号、'm' 或 's'")
+                    else:
+                        print(f"❌ 未找到与 '{self.link_field}' 相似的字段")
+                        print(f"🤔 请选择:")
+                        print(f"  1. 手动选择字段 (输入 'm')")
+                        print(f"  2. 跳过此源文件 (输入 's')")
+                        
+                        while True:
+                            choice = input("请选择: ").strip().lower()
+                            if choice == 's':
+                                print(f"⏭️  跳过源文件 '{source_filename}'")
+                                break
+                            elif choice == 'm':
+                                selected_source_field = self._manual_select_source_field(source_columns, source_filename)
+                                break
+                            else:
+                                print("❌ 请输入 'm' 或 's'")
+                    
+                    # 保存映射关系
+                    if selected_source_field:
+                        self.source_field_mapping[source_filename] = {
+                            self.link_field: selected_source_field
+                        }
+                        print(f"📝 建立映射: {self.link_field} -> {selected_source_field}")
+                
+                except Exception as e:
+                    print(f"❌ 处理源文件 '{source_filename}' 时出错: {str(e)}")
+                    continue
+            
+            # 显示最终的映射结果
+            print(f"\n📋 关联字段映射结果:")
+            print(f"🎯 目标字段: {self.link_field}")
+            for source_file, mapping in self.source_field_mapping.items():
+                source_field = mapping.get(self.link_field, "未映射")
+                print(f"  📄 {source_file}: {source_field}")
+            
+            if not self.source_field_mapping:
+                print("❌ 没有建立任何源文件的字段映射，无法进行同步")
+                return
                     
         except Exception as e:
             print(f"❌ 读取文件时出错: {str(e)}")
     
+    def _manual_select_source_field(self, source_columns: List[str], source_filename: str) -> str:
+        """手动选择源文件字段"""
+        print(f"\n📋 源文件 '{source_filename}' 的所有字段:")
+        for i, field in enumerate(source_columns, 1):
+            print(f"  {i:2d}. {field}")
+        
+        print(f"\n📝 请选择要用作关联字段的源文件字段:")
+        while True:
+            try:
+                choice = input("请输入字段编号: ").strip()
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(source_columns):
+                    selected_field = source_columns[choice_idx]
+                    print(f"✅ 选择了字段: {selected_field}")
+                    return selected_field
+                else:
+                    print("❌ 字段编号超出范围，请重新选择")
+            except ValueError:
+                print("❌ 请输入有效的数字")
+    
     def select_multi_sync_update_fields(self):
-        """多源同步更新字段选择"""
+        """多源同步更新字段选择 - 以目标文件为主导的新逻辑"""
         print(f"\n=== 步骤3: 更新字段选择 ===")
         
         try:
@@ -2239,110 +2102,206 @@ class ExcelProcessor:
             target_df = pd.read_excel(self.target_file)
             target_columns = list(target_df.columns)
             
-            # 读取所有源文件，找出可更新的字段
-            all_source_columns = set()
-            for source_file in self.source_files:
-                source_df = pd.read_excel(source_file)
-                all_source_columns.update(source_df.columns)
+            # 排除关联字段，显示目标文件的可更新字段
+            updateable_target_fields = [field for field in target_columns if field != self.link_field]
             
-            # 找出目标文件中存在且源文件中也存在的字段（排除关联字段）
-            updateable_fields = [field for field in target_columns 
-                               if field in all_source_columns and field != self.link_field]
-            
-            if not updateable_fields:
-                print("❌ 没有可更新的字段")
+            if not updateable_target_fields:
+                print("❌ 目标文件除了关联字段外没有其他字段可更新")
                 return
             
-            # 智能检测更新字段
-            print(f"🔍 智能检测可更新字段...")
+            print(f"🎯 从目标文件选择要更新的字段")
+            print(f"📋 目标文件 '{os.path.basename(self.target_file)}' 的可更新字段（排除关联字段 '{self.link_field}'）:")
             
-            # 检测源文件之间的字段模糊匹配
-            print(f"🔍 检测源文件字段匹配情况...")
-            source_files_data = {}
-            for source_file in self.source_files:
-                source_df = pd.read_excel(source_file)
-                source_files_data[os.path.basename(source_file)] = list(source_df.columns)
+            # 显示目标文件的可更新字段
+            for i, field in enumerate(updateable_target_fields, 1):
+                print(f"{i:2d}. {field}")
             
-            # 检查字段模糊匹配
-            fuzzy_matches = []
-            for i, file1 in enumerate(self.source_files):
-                for j, file2 in enumerate(self.source_files):
-                    if i < j:  # 避免重复检查
-                        file1_name = os.path.basename(file1)
-                        file2_name = os.path.basename(file2)
-                        file1_fields = source_files_data[file1_name]
-                        file2_fields = source_files_data[file2_name]
-                        
-                        # 检查字段模糊匹配
-                        for field1 in file1_fields:
-                            for field2 in file2_fields:
-                                if field1 != field2 and self.calculate_similarity(field1, field2) >= 0.8:
-                                    fuzzy_matches.append({
-                                        'file1': file1_name,
-                                        'file2': file2_name,
-                                        'field1': field1,
-                                        'field2': field2,
-                                        'similarity': self.calculate_similarity(field1, field2)
-                                    })
+            # 让用户选择要更新的字段
+            print(f"\n📝 请选择要更新的字段:")
+            print("📝 输入字段编号，用逗号分隔（如：1,2,3）")
+            print("📝 输入 'all' 选择所有可更新字段")
             
-            # 显示模糊匹配结果
-            if fuzzy_matches:
-                print(f"💡 发现 {len(fuzzy_matches)} 个字段模糊匹配:")
-                for match in fuzzy_matches:
-                    print(f"  📋 {match['file1']} 的 '{match['field1']}' 与 {match['file2']} 的 '{match['field2']}' 相似度: {match['similarity']:.2f}")
-                print(f"💡 这些字段可能表示相同的数据，建议检查字段映射")
-            else:
-                print(f"✅ 未发现明显的字段模糊匹配")
-            
-            # 显示检测建议
-            if updateable_fields:
-                print(f"💡 检测到 {len(updateable_fields)} 个可更新字段")
-                print(f"📋 可更新的字段（排除关联字段 '{self.link_field}'）:")
-                for i, field in enumerate(updateable_fields, 1):
-                    # 显示每个字段来自哪些源文件
-                    source_files_with_field = []
-                    for source_file in self.source_files:
-                        source_df = pd.read_excel(source_file)
-                        if field in source_df.columns:
-                            source_files_with_field.append(os.path.basename(source_file))
+            selected_target_fields = []
+            while True:
+                try:
+                    update_choice = input("请输入要更新的字段编号: ").strip()
                     
-                    field_info = f"{i:2d}. {field}"
-                    if source_files_with_field:
-                        field_info += f" (来自: {', '.join(source_files_with_field)})"
-                    print(field_info)
-                
-                # 让用户选择
-                print(f"\n📝 请选择要更新的字段:")
-                print("📝 输入字段编号，用逗号分隔（如：1,2,3）")
-                print("📝 输入 'all' 选择所有可更新字段")
-                
-                while True:
-                    try:
-                        update_choice = input("请输入要更新的字段编号: ").strip()
-                        if update_choice.lower() == 'all':
-                            self.update_fields = updateable_fields
-                            print(f"✅ 已选择所有 {len(updateable_fields)} 个字段进行更新")
+                    if update_choice.lower() == 'all':
+                        selected_target_fields = updateable_target_fields.copy()
+                        print(f"✅ 已选择所有 {len(selected_target_fields)} 个目标字段进行更新")
+                        break
+                    else:
+                        # 解析用户选择的字段编号
+                        indices = [int(x.strip()) - 1 for x in update_choice.split(',')]
+                        selected_target_fields = []
+                        
+                        for index in indices:
+                            if 0 <= index < len(updateable_target_fields):
+                                selected_target_fields.append(updateable_target_fields[index])
+                            else:
+                                print(f"⚠️  字段编号 {index + 1} 超出范围，跳过")
+                        
+                        if selected_target_fields:
+                            print(f"✅ 已选择 {len(selected_target_fields)} 个目标字段进行更新:")
+                            for field in selected_target_fields:
+                                print(f"  📝 {field}")
                             break
                         else:
-                            update_indices = [int(x.strip()) - 1 for x in update_choice.split(',')]
-                            self.update_fields = [updateable_fields[i] for i in update_indices if 0 <= i < len(updateable_fields)]
+                            print("❌ 未选择任何有效字段，请重新选择")
                             
-                            if not self.update_fields:
-                                print("❌ 未选择任何有效字段，请重新选择")
-                                continue
+                except ValueError:
+                    print("❌ 请输入有效的数字或 'all'")
+            
+            # 为每个选择的目标字段建立与源文件的映射关系
+            print(f"\n🔄 为每个更新字段建立源文件映射")
+            self.update_fields = []
+            
+            for target_field in selected_target_fields:
+                print(f"\n📝 处理目标字段: {target_field}")
+                field_has_mapping = False
+                
+                # 为每个源文件查找对应的字段
+                for source_file in self.source_files:
+                    source_filename = os.path.basename(source_file)
+                    
+                    # 跳过没有建立关联字段映射的源文件
+                    if source_filename not in self.source_field_mapping:
+                        continue
+                    
+                    try:
+                        source_df = pd.read_excel(source_file)
+                        source_columns = list(source_df.columns)
+                        
+                        # 尝试模糊匹配目标更新字段
+                        similar_fields = []
+                        for source_field in source_columns:
+                            if source_field != self.source_field_mapping[source_filename].get(self.link_field):  # 排除关联字段
+                                similarity = self.calculate_similarity(target_field, source_field)
+                                if similarity >= 0.8:
+                                    similar_fields.append((source_field, similarity))
+                        
+                        # 按相似度排序
+                        similar_fields.sort(key=lambda x: x[1], reverse=True)
+                        
+                        selected_source_field = None
+                        
+                        if similar_fields:
+                            print(f"  📄 源文件 '{source_filename}' - 找到与 '{target_field}' 相似的字段:")
+                            for i, (field, sim) in enumerate(similar_fields, 1):
+                                print(f"    {i}. {field} (相似度: {sim:.2f})")
                             
-                            print(f"✅ 已选择 {len(self.update_fields)} 个字段进行更新:")
-                            for field in self.update_fields:
-                                print(f"  📋 {field}")
-                            break
-                    except ValueError:
-                        print("❌ 请输入有效的数字")
-            else:
-                print(f"❌ 没有可更新的字段")
+                            print(f"  🤔 请选择:")
+                            print(f"    1. 使用相似字段 (输入编号，默认选择1)")
+                            print(f"    2. 手动选择其他字段 (输入 'm')")
+                            print(f"    3. 跳过此源文件 (输入 's')")
+                            
+                            while True:
+                                choice = input(f"  对于源文件 '{source_filename}' 请选择 (默认1): ").strip().lower()
+                                if not choice:  # 用户按回车，默认选择第一个相似字段
+                                    choice = "1"
+                                
+                                if choice == 's':
+                                    print(f"  ⏭️  跳过源文件 '{source_filename}'")
+                                    break
+                                elif choice == 'm':
+                                    selected_source_field = self._manual_select_update_field(source_columns, source_filename, target_field)
+                                    break
+                                else:
+                                    try:
+                                        choice_idx = int(choice) - 1
+                                        if 0 <= choice_idx < len(similar_fields):
+                                            selected_source_field = similar_fields[choice_idx][0]
+                                            print(f"  ✅ 选择了相似字段: {selected_source_field}")
+                                            field_has_mapping = True
+                                            break
+                                        else:
+                                            print("  ❌ 编号超出范围，请重新选择")
+                                    except ValueError:
+                                        print("  ❌ 请输入有效的编号、'm' 或 's'")
+                        else:
+                            print(f"  📄 源文件 '{source_filename}' - 未找到与 '{target_field}' 相似的字段")
+                            print(f"  🤔 请选择:")
+                            print(f"    1. 手动选择字段 (输入 'm')")
+                            print(f"    2. 跳过此源文件 (输入 's')")
+                            
+                            while True:
+                                choice = input(f"  对于源文件 '{source_filename}' 请选择: ").strip().lower()
+                                if choice == 's':
+                                    print(f"  ⏭️  跳过源文件 '{source_filename}'")
+                                    break
+                                elif choice == 'm':
+                                    selected_source_field = self._manual_select_update_field(source_columns, source_filename, target_field)
+                                    if selected_source_field:
+                                        field_has_mapping = True
+                                    break
+                                else:
+                                    print("  ❌ 请输入 'm' 或 's'")
+                        
+                        # 保存更新字段映射关系
+                        if selected_source_field:
+                            if source_filename not in self.source_field_mapping:
+                                self.source_field_mapping[source_filename] = {}
+                            self.source_field_mapping[source_filename][target_field] = selected_source_field
+                            print(f"  📝 建立映射: {target_field} -> {selected_source_field}")
+                            field_has_mapping = True
+                    
+                    except Exception as e:
+                        print(f"  ❌ 处理源文件 '{source_filename}' 时出错: {str(e)}")
+                        continue
+                
+                # 如果至少有一个源文件建立了映射，则添加到更新字段列表
+                if field_has_mapping:
+                    self.update_fields.append(target_field)
+                    print(f"✅ 目标字段 '{target_field}' 已添加到更新列表")
+                else:
+                    print(f"⚠️  目标字段 '{target_field}' 没有在任何源文件中找到对应字段，跳过")
+            
+            if not self.update_fields:
+                print("❌ 没有建立任何更新字段的映射关系")
                 return
+            
+            # 显示最终的更新字段映射结果
+            print(f"\n📋 更新字段映射结果:")
+            for target_field in self.update_fields:
+                print(f"🎯 目标字段: {target_field}")
+                for source_file, mapping in self.source_field_mapping.items():
+                    if target_field in mapping:
+                        print(f"  📄 {source_file}: {mapping[target_field]}")
                     
         except Exception as e:
             print(f"❌ 读取文件时出错: {str(e)}")
+    
+    def _manual_select_update_field(self, source_columns: List[str], source_filename: str, target_field: str) -> str:
+        """手动选择源文件的更新字段"""
+        # 排除已经用作关联字段的字段
+        available_fields = []
+        link_field_in_source = self.source_field_mapping.get(source_filename, {}).get(self.link_field)
+        
+        for field in source_columns:
+            if field != link_field_in_source:  # 排除关联字段
+                available_fields.append(field)
+        
+        if not available_fields:
+            print(f"  ⚠️  源文件 '{source_filename}' 没有可用的更新字段")
+            return None
+        
+        print(f"\n  📋 源文件 '{source_filename}' 的可用字段（排除关联字段）:")
+        for i, field in enumerate(available_fields, 1):
+            print(f"    {i:2d}. {field}")
+        
+        print(f"\n  📝 请选择要映射到目标字段 '{target_field}' 的源文件字段:")
+        while True:
+            try:
+                choice = input("  请输入字段编号: ").strip()
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(available_fields):
+                    selected_field = available_fields[choice_idx]
+                    print(f"  ✅ 选择了字段: {selected_field}")
+                    return selected_field
+                else:
+                    print("  ❌ 字段编号超出范围，请重新选择")
+            except ValueError:
+                print("  ❌ 请输入有效的数字")
     
     def configure_conflict_handling(self):
         """配置冲突处理方式"""
@@ -2378,31 +2337,76 @@ class ExcelProcessor:
     def set_multi_sync_output(self):
         """设置多源同步输出"""
         print(f"\n=== 步骤5: 输出设置 ===")
+        print("💡 您可以输入:")
+        print("   • 完整的文件路径（如：G:\\wang\\excel\\result.xlsx）")
+        print("   • 目录路径（将自动生成文件名）")
         
-        # 设置输出目录
-        self.output_directory = input("请输入输出目录路径（或按回车使用默认目录G:\\wang\\excel）: ").strip()
-        if not self.output_directory:
-            self.output_directory = "G:\\wang\\excel"
+        # 获取用户输入
+        user_input = input("请输入输出路径（或按回车使用默认目录G:\\wang\\excel）: ").strip()
+        if not user_input:
+            user_input = "G:\\wang\\excel"
         
-        # 确保输出目录存在
-        if not os.path.exists(self.output_directory):
-            try:
-                os.makedirs(self.output_directory)
-                print(f"✅ 已创建输出目录: {self.output_directory}")
-            except Exception as e:
-                print(f"❌ 创建输出目录失败: {str(e)}")
-                return
-        
-        print(f"✅ 输出目录: {self.output_directory}")
+        # 判断用户输入的是文件路径还是目录路径
+        if user_input.lower().endswith(('.xlsx', '.xls')):
+            # 用户输入的是完整文件路径
+            self.output_file_path = os.path.abspath(user_input)
+            self.output_directory = os.path.dirname(self.output_file_path)
+            output_filename = os.path.basename(self.output_file_path)
+            
+            # 检查文件是否已存在
+            if os.path.exists(self.output_file_path):
+                print(f"⚠️  文件已存在: {self.output_file_path}")
+                overwrite = input("是否要替换现有文件？(y/n，默认n): ").strip().lower()
+                if overwrite not in ['y', 'yes', '是']:
+                    # 生成新文件名
+                    base_name = os.path.splitext(output_filename)[0]
+                    extension = os.path.splitext(output_filename)[1]
+                    counter = 1
+                    while True:
+                        new_filename = f"{base_name}_{counter}{extension}"
+                        new_file_path = os.path.join(self.output_directory, new_filename)
+                        if not os.path.exists(new_file_path):
+                            self.output_file_path = new_file_path
+                            output_filename = new_filename
+                            print(f"📝 使用新文件名: {output_filename}")
+                            break
+                        counter += 1
+                else:
+                    print("✅ 将替换现有文件")
+            
+            # 确保输出目录存在
+            if not os.path.exists(self.output_directory):
+                try:
+                    os.makedirs(self.output_directory)
+                    print(f"✅ 已创建输出目录: {self.output_directory}")
+                except Exception as e:
+                    print(f"❌ 创建输出目录失败: {str(e)}")
+                    return
+            
+            print(f"✅ 输出文件: {self.output_file_path}")
+            
+        else:
+            # 用户输入的是目录路径
+            self.output_directory = os.path.abspath(user_input)
+            self.output_file_path = None  # 将在保存时自动生成文件名
+            
+            # 确保输出目录存在
+            if not os.path.exists(self.output_directory):
+                try:
+                    os.makedirs(self.output_directory)
+                    print(f"✅ 已创建输出目录: {self.output_directory}")
+                except Exception as e:
+                    print(f"❌ 创建输出目录失败: {str(e)}")
+                    return
+            
+            print(f"✅ 输出目录: {self.output_directory}")
+            print("💡 文件名将自动生成")
     
     def execute_multi_sync(self):
         """执行多源同步"""
         print(f"\n=== 步骤6: 执行多源同步 ===")
         
         try:
-            # 备份目标文件
-            self.backup_target_file()
-            
             # 读取目标文件
             target_df = pd.read_excel(self.target_file)
             print(f"📊 目标文件包含 {len(target_df)} 条记录")
@@ -2464,9 +2468,16 @@ class ExcelProcessor:
             # 在所有源文件中查找匹配的记录
             matching_data = {}
             for source_name, source_df in source_data.items():
-                # 确定源文件中的关联字段名称
-                source_link_field = self.find_actual_field_name(source_df, self.link_field)
+                # 使用建立的字段映射关系确定源文件中的关联字段名称
+                source_link_field = None
+                if source_name in self.source_field_mapping:
+                    source_link_field = self.source_field_mapping[source_name].get(self.link_field)
+                
+                # 如果没有建立映射关系，尝试使用原始逻辑作为后备
                 if not source_link_field:
+                    source_link_field = self.find_actual_field_name(source_df, self.link_field)
+                
+                if not source_link_field or source_link_field not in source_df.columns:
                     continue
                 
                 # 查找匹配的记录
@@ -2487,9 +2498,16 @@ class ExcelProcessor:
                 # 收集所有源文件中的值
                 field_values = {}
                 for source_name, source_row in matching_data.items():
-                    # 确定源文件中的字段名称
-                    source_field = self.find_actual_field_name(source_data[source_name], update_field)
-                    if source_field and not pd.isna(source_row[source_field]):
+                    # 使用建立的字段映射关系确定源文件中的字段名称
+                    source_field = None
+                    if source_name in self.source_field_mapping:
+                        source_field = self.source_field_mapping[source_name].get(update_field)
+                    
+                    # 如果没有建立映射关系，尝试使用原始逻辑作为后备
+                    if not source_field:
+                        source_field = self.find_actual_field_name(source_data[source_name], update_field)
+                    
+                    if source_field and source_field in source_row.index and not pd.isna(source_row[source_field]):
                         field_values[source_name] = str(source_row[source_field]).strip()
                 
                 if not field_values:
@@ -2498,9 +2516,24 @@ class ExcelProcessor:
                 # 检查是否有冲突（多个不同的值）
                 unique_values = set(field_values.values())
                 if len(unique_values) == 1:
-                    # 没有冲突，直接更新
+                    # 没有冲突，检查是否需要更新
                     value = list(unique_values)[0]
-                    updated_df.at[target_idx, actual_update_field] = value
+                    current_value = updated_df.at[target_idx, actual_update_field]
+                    
+                    # 如果当前值和新值相同，跳过更新
+                    if (not pd.isna(current_value) and 
+                        str(current_value).strip() == str(value).strip()):
+                        continue  # 值相同，无需更新
+                    
+                    # 确保数据类型兼容，先将列转换为object类型
+                    if updated_df[actual_update_field].dtype != 'object':
+                        updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
+                    
+                    if pd.isna(value) or value == '':
+                        updated_df.at[target_idx, actual_update_field] = None
+                    else:
+                        # 将值转换为字符串以避免类型不兼容警告
+                        updated_df.at[target_idx, actual_update_field] = str(value)
                     total_updates += 1
                 else:
                     # 有冲突，根据配置处理
@@ -2508,20 +2541,58 @@ class ExcelProcessor:
                         # 询问用户选择
                         choice = self.ask_user_for_conflict_resolution(link_value, update_field, field_values)
                         if choice:
-                            updated_df.at[target_idx, actual_update_field] = choice
-                            total_updates += 1
+                            current_value = updated_df.at[target_idx, actual_update_field]
+                            
+                            # 检查是否需要更新
+                            if (pd.isna(current_value) or 
+                                str(current_value).strip() != str(choice).strip()):
+                                # 确保数据类型兼容，先将列转换为object类型
+                                if updated_df[actual_update_field].dtype != 'object':
+                                    updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
+                                
+                                if pd.isna(choice) or choice == '':
+                                    updated_df.at[target_idx, actual_update_field] = None
+                                else:
+                                    updated_df.at[target_idx, actual_update_field] = str(choice)
+                                total_updates += 1
                             conflicts_resolved += 1
                     elif self.conflict_handling == "first":
                         # 使用第一个源文件的数据
                         first_source = list(field_values.keys())[0]
-                        updated_df.at[target_idx, actual_update_field] = field_values[first_source]
-                        total_updates += 1
+                        value = field_values[first_source]
+                        current_value = updated_df.at[target_idx, actual_update_field]
+                        
+                        # 检查是否需要更新
+                        if (pd.isna(current_value) or 
+                            str(current_value).strip() != str(value).strip()):
+                            # 确保数据类型兼容，先将列转换为object类型
+                            if updated_df[actual_update_field].dtype != 'object':
+                                updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
+                            
+                            if pd.isna(value) or value == '':
+                                updated_df.at[target_idx, actual_update_field] = None
+                            else:
+                                updated_df.at[target_idx, actual_update_field] = str(value)
+                            total_updates += 1
                         conflicts_resolved += 1
                     elif self.conflict_handling == "last":
                         # 使用最后一个源文件的数据
                         last_source = list(field_values.keys())[-1]
-                        updated_df.at[target_idx, actual_update_field] = field_values[last_source]
-                        total_updates += 1
+                        value = field_values[last_source]
+                        current_value = updated_df.at[target_idx, actual_update_field]
+                        
+                        # 检查是否需要更新
+                        if (pd.isna(current_value) or 
+                            str(current_value).strip() != str(value).strip()):
+                            # 确保数据类型兼容，先将列转换为object类型
+                            if updated_df[actual_update_field].dtype != 'object':
+                                updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
+                            
+                            if pd.isna(value) or value == '':
+                                updated_df.at[target_idx, actual_update_field] = None
+                            else:
+                                updated_df.at[target_idx, actual_update_field] = str(value)
+                            total_updates += 1
                         conflicts_resolved += 1
                     elif self.conflict_handling == "skip":
                         # 跳过冲突的记录
@@ -2577,11 +2648,16 @@ class ExcelProcessor:
     def save_multi_sync_file(self, updated_df: pd.DataFrame):
         """保存多源同步文件"""
         try:
-            # 生成输出文件名
-            target_basename = os.path.splitext(os.path.basename(self.target_file))[0]
-            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-            output_filename = f"{target_basename}_多源同步_{timestamp}.xlsx"
-            output_path = os.path.join(self.output_directory, output_filename)
+            # 确定输出文件路径
+            if hasattr(self, 'output_file_path') and self.output_file_path:
+                # 用户指定了完整的文件路径
+                output_path = self.output_file_path
+            else:
+                # 用户只指定了目录，自动生成文件名
+                target_basename = os.path.splitext(os.path.basename(self.target_file))[0]
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                output_filename = f"{target_basename}_多源同步_{timestamp}.xlsx"
+                output_path = os.path.join(self.output_directory, output_filename)
             
             # 保存文件
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:

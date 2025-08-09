@@ -16,11 +16,12 @@ class ExcelProcessor:
         self.dedup_fields = []
         self.output_filename = "result.xlsx"
         
-        # 字段补充功能相关属性
-        self.enable_field_supplement = False
-        self.field_mappings = {}  # 字段映射字典 {field_name: {student_id: value}}
-        self.default_values = {}  # 默认值字典 {field_name: default_value}
-        self.link_field = '学号'  # 关联字段，默认为学号
+        # 重复记录相关属性
+        self.duplicate_records = pd.DataFrame()  # 存储发现的重复记录
+        self.duplicate_count = 0  # 重复记录数量
+        self.enable_interactive_dedup = True  # 是否启用交互式去重
+        self.conflict_resolution_choices = {}  # 存储用户的冲突解决选择
+
         
         # 新增：智能列名匹配相关属性
         self.column_mapping = {}  # 列名映射关系
@@ -154,7 +155,7 @@ class ExcelProcessor:
                     if variant in available_columns:
                         mapping[required] = variant
                         unmapped_available.remove(variant)
-                        print(f"✅ 变体匹配: {required} -> {variant}")
+                        print(f"✅ 变体匹配: {variant} -> {required}")
                         matched = True
                         break
             
@@ -169,24 +170,43 @@ class ExcelProcessor:
                 
                 if similar_columns:
                     best_match, similarity = similar_columns[0]
-                    print(f"🔍 找到相似列名: {required} -> {best_match} (相似度: {similarity:.2f})")
+                    print(f"🔍 找到相似列名: {best_match} -> {required} (相似度: {similarity:.2f})")
                     
                     # 询问用户是否确认映射
-                    confirm = input(f"是否将 '{required}' 映射到 '{best_match}'？(y/n，默认y): ").strip().lower()
+                    confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
                     if confirm not in ['n', 'no', '否']:
                         mapping[required] = best_match
                         unmapped_available.remove(best_match)
-                        print(f"✅ 确认映射: {required} -> {best_match}")
+                        print(f"✅ 确认映射: {best_match} -> {required}")
                     else:
                         print(f"⚠️  跳过映射: {required}")
                 else:
                     print(f"❌ 未找到与 '{required}' 相似的列名")
+                    print(f"🤔 请选择:")
+                    print(f"  1. 手动选择列名 (输入 'm')")
+                    print(f"  2. 跳过此字段 (输入 's')")
+                    
+                    while True:
+                        choice = input(f"对于字段 '{required}' 请选择: ").strip().lower()
+                        if choice == 's':
+                            print(f"⚠️  跳过映射: {required}")
+                            break
+                        elif choice == 'm':
+                            selected_column = self._manual_select_column(required, unmapped_available)
+                            if selected_column:
+                                mapping[required] = selected_column
+                                unmapped_available.remove(selected_column)
+                                unmapped_required.remove(required)
+                                print(f"✅ 手动映射: {selected_column} -> {required}")
+                            break
+                        else:
+                            print("❌ 请输入 'm' 或 's'")
         
         # 显示映射结果
         if mapping:
             print(f"\n📋 列名映射结果:")
             for required, mapped in mapping.items():
-                print(f"  {required} -> {mapped}")
+                print(f"  {mapped} -> {required}")
         
         if unmapped_required:
             print(f"\n⚠️  未映射的列名: {unmapped_required}")
@@ -362,307 +382,13 @@ class ExcelProcessor:
         
         return self.all_fields
     
-    def analyze_field_supplement_situation(self, files: List[str], selected_fields: List[str]) -> Dict:
-        """
-        分析字段补充情况
-        
-        Args:
-            files: 文件列表
-            selected_fields: 用户选择的字段列表
-            
-        Returns:
-            分析结果字典
-        """
-        analysis_result = {
-            'files_with_all_fields': [],  # 包含所有必需字段的文件
-            'files_missing_fields': {},   # 缺少特定字段的文件 {field: [files]}
-            'files_without_key_field': [], # 不包含关键字段（学号）的文件
-            'total_files': len(files)
-        }
-        
-        # 初始化缺失字段字典
-        for field in selected_fields:
-            analysis_result['files_missing_fields'][field] = []
-        
-        print(f"\n🔍 分析字段补充情况...")
-        
-        for file in files:
-            try:
-                df = pd.read_excel(file)
-                file_fields = self.get_file_fields(file)  # 使用过滤后的字段
-                filename = os.path.basename(file)
-                
-                # 检查是否包含学号（作为关键字段）
-                has_student_id = any(id_field in file_fields for id_field in ['学号', '*学号'])
-                
-                if not has_student_id:
-                    analysis_result['files_without_key_field'].append(file)
-                    print(f"ℹ️  {filename}: 不包含学号")
-                    continue
-                
-                # 检查每个必需字段
-                missing_fields = []
-                for field in selected_fields:
-                    # 支持智能匹配，检查字段是否存在
-                    field_found = False
-                    for col in df.columns:
-                        if field in col or col in field:
-                            field_found = True
-                            break
-                    
-                    if not field_found:
-                        missing_fields.append(field)
-                        analysis_result['files_missing_fields'][field].append(file)
-                
-                if not missing_fields:
-                    analysis_result['files_with_all_fields'].append(file)
-                    print(f"✅ {filename}: 包含所有必需字段")
-                else:
-                    missing_str = ', '.join(missing_fields)
-                    print(f"⚠️  {filename}: 缺少字段 {missing_str}")
-                    
-            except Exception as e:
-                print(f"❌ 分析文件 '{os.path.basename(file)}' 时出错: {str(e)}")
-                analysis_result['files_without_key_field'].append(file)
-        
-        return analysis_result
+
     
-    def build_field_mapping(self, files_with_all_fields: List[str], target_field: str, link_field: str = '学号') -> Dict[str, str]:
-        """
-        构建关联字段到目标字段的映射
-        
-        Args:
-            files_with_all_fields: 包含所有必需字段的文件列表
-            target_field: 目标字段名称
-            link_field: 关联字段名称（默认学号）
-            
-        Returns:
-            关联字段到目标字段的映射字典
-        """
-        if not files_with_all_fields:
-            return {}
-        
-        print(f"\n🔄 构建{link_field}到{target_field}的映射...")
-        mapping = {}
-        total_mappings = 0
-        
-        for file in files_with_all_fields:
-            try:
-                df = pd.read_excel(file)
-                filename = os.path.basename(file)
-                
-                # 确定关联字段名称
-                link_field_name = None
-                for col in df.columns:
-                    if link_field in col or col in link_field:
-                        link_field_name = col
-                        break
-                
-                if not link_field_name:
-                    print(f"⚠️  文件 '{filename}' 缺少{link_field}字段，跳过")
-                    continue
-                
-                # 确定目标字段名称（支持智能匹配）
-                target_field_name = None
-                for col in df.columns:
-                    if target_field in col or col in target_field:
-                        target_field_name = col
-                        break
-                
-                if not target_field_name:
-                    print(f"⚠️  文件 '{filename}' 缺少{target_field}字段，跳过")
-                    continue
-                
-                # 构建映射关系
-                file_mappings = 0
-                for _, row in df.iterrows():
-                    link_value = str(row[link_field_name]).strip()
-                    target_value = str(row[target_field_name]).strip()
-                    
-                    # 跳过空值
-                    if pd.isna(link_value) or pd.isna(target_value) or link_value == '' or target_value == '':
-                        continue
-                    
-                    # 如果关联值已存在，优先使用第一个匹配
-                    if link_value not in mapping:
-                        mapping[link_value] = target_value
-                        file_mappings += 1
-                
-                total_mappings += file_mappings
-                print(f"📊 {filename}: 添加了 {file_mappings} 个映射关系")
-                
-            except Exception as e:
-                print(f"❌ 处理文件 '{os.path.basename(file)}' 时出错: {str(e)}")
-                continue
-        
-        print(f"✅ 总共构建了 {total_mappings} 个{link_field}-{target_field}映射关系")
-        return mapping
+
     
-    def configure_field_supplement(self, analysis_result: Dict, selected_fields: List[str]) -> Tuple[bool, Dict[str, str], str]:
-        """
-        配置字段补充功能
-        
-        Args:
-            analysis_result: 分析结果
-            selected_fields: 用户选择的字段列表
-            
-        Returns:
-            (是否启用补充功能, 默认值字典)
-        """
-        files_with_all_fields = analysis_result['files_with_all_fields']
-        files_missing_fields = analysis_result['files_missing_fields']
-        
-        # 检查是否有缺失字段
-        missing_fields = [field for field, files in files_missing_fields.items() if files]
-        
-        if not missing_fields:
-            print(f"\n✅ 所有文件都包含所有必需字段，无需补充")
-            return False, {}
-        
-        if not files_with_all_fields:
-            print(f"\n⚠️  没有找到包含所有必需字段的文件，无法构建映射关系")
-            print(f"📝 建议：至少需要一个包含所有必需字段的文件来构建映射关系")
-            return False, ""
-        
-        print(f"\n=== 字段补充配置 ===")
-        print(f"📊 分析结果:")
-        print(f"  • 包含所有必需字段的文件: {len(files_with_all_fields)} 个")
-        print(f"  • 不包含学号的文件: {len(analysis_result['files_without_key_field'])} 个")
-        
-        for field in missing_fields:
-            missing_files = files_missing_fields[field]
-            print(f"  • 缺少{field}字段的文件: {len(missing_files)} 个")
-        
-        print(f"\n🤔 检测到部分文件缺少字段，是否启用字段补充功能？")
-        print(f"📝 补充功能将从其他文件中根据输入字段匹配获取缺失字段")
-        
-        choice = input("请选择 (y/n，默认y): ").strip().lower()
-        enable_supplement = choice not in ['n', 'no', '否']
-        
-        if not enable_supplement:
-            print(f"✅ 已选择不启用补充功能")
-            return False, {}, '学号'
-        
-        # 选择关联字段
-        print(f"\n🔗 请选择用于匹配的关联字段:")
-        print(f"📋 可用字段: {', '.join(selected_fields)}")
-        print(f"📝 输入字段名称（如：学号、学生姓名等）")
-        print(f"📝 建议选择在所有文件中都存在且唯一性较好的字段作为关联字段")
-        
-        link_field = input("关联字段（默认：学号）: ").strip()
-        if not link_field:
-            link_field = '学号'
-        
-        # 验证关联字段是否在选中字段中
-        if link_field not in selected_fields:
-            print(f"⚠️  关联字段 '{link_field}' 不在选中字段中，将使用默认字段 '学号'")
-            link_field = '学号'
-        
-        print(f"✅ 已设置关联字段: {link_field}")
-        
-        # 为每个缺失字段设置默认值
-        default_values = {}
-        for field in missing_fields:
-            print(f"\n📝 请输入{field}字段未找到匹配时使用的默认值")
-            default_value = input(f"默认值（默认：未知{field}）: ").strip()
-            if not default_value:
-                default_value = f"未知{field}"
-            default_values[field] = default_value
-            print(f"✅ 已设置{field}默认值: {default_value}")
-        
-        return True, default_values, link_field
+
     
-    def supplement_fields(self, df: pd.DataFrame, field_mappings: Dict[str, Dict[str, str]], 
-                         default_values: Dict[str, str], link_field: str = '学号') -> pd.DataFrame:
-        """
-        为数据框补充缺失字段
-        
-        Args:
-            df: 数据框
-            field_mappings: 字段映射字典 {field_name: {student_id: value}}
-            default_values: 默认值字典 {field_name: default_value}
-            
-        Returns:
-            补充后的数据框
-        """
-        # 确定关联字段名称
-        link_field_name = None
-        for col in df.columns:
-            if link_field in col or col in link_field:
-                link_field_name = col
-                break
-        
-        if not link_field_name:
-            print(f"⚠️  数据框不包含关联字段 '{link_field}'，无法补充字段")
-            return df
-        
-        # 为每个缺失字段进行补充
-        for field_name, mapping in field_mappings.items():
-            # 确定目标字段名称
-            target_field_name = None
-            for col in df.columns:
-                if field_name in col or col in field_name:
-                    target_field_name = col
-                    break
-            
-            # 如果字段不存在，创建一个新的
-            if not target_field_name:
-                target_field_name = field_name
-                df[target_field_name] = default_values.get(field_name, f"未知{field_name}")
-                print(f"📝 创建新的{field_name}字段")
-            else:
-                # 检查是否有空值需要补充
-                missing_values = df[target_field_name].isna() | (df[target_field_name].astype(str).str.strip() == '')
-                if not missing_values.any():
-                    print(f"✅ {field_name}字段已完整，无需补充")
-                    continue
-                else:
-                    missing_count = missing_values.sum()
-                    print(f"📊 发现 {missing_count} 个空的{field_name}，开始补充...")
-            
-            # 补充字段值
-            supplemented_count = 0
-            successful_matches = 0
-            default_used = 0
-            
-            for idx, row in df.iterrows():
-                link_value = str(row[link_field_name]).strip()
-                
-                # 跳过空关联值
-                if pd.isna(link_value) or link_value == '':
-                    continue
-                
-                # 检查当前字段值是否为空
-                current_value = str(row[target_field_name]).strip()
-                if pd.isna(current_value) or current_value == '' or current_value == default_values.get(field_name, f"未知{field_name}"):
-                    # 尝试从映射中获取值（精确匹配）
-                    if link_value in mapping:
-                        df.at[idx, target_field_name] = mapping[link_value]
-                        successful_matches += 1
-                    else:
-                        # 尝试模糊匹配（支持一位字符的差异）
-                        matched_value = None
-                        for map_key, map_value in mapping.items():
-                            # 如果关联值长度相同，尝试一位字符的模糊匹配
-                            if len(link_value) == len(map_key):
-                                # 计算不同字符的数量
-                                diff_count = sum(1 for a, b in zip(link_value, map_key) if a != b)
-                                if diff_count <= 1:  # 允许一位字符的差异
-                                    matched_value = map_value
-                                    break
-                        
-                        if matched_value:
-                            df.at[idx, target_field_name] = matched_value
-                            successful_matches += 1
-                        else:
-                            df.at[idx, target_field_name] = default_values.get(field_name, f"未知{field_name}")
-                            default_used += 1
-                    supplemented_count += 1
-            
-            if supplemented_count > 0:
-                print(f"📊 {field_name}补充统计: 成功匹配 {successful_matches} 个，使用默认值 {default_used} 个")
-        
-        return df
+
     
     def get_file_fields(self, file_path: str) -> List[str]:
         """
@@ -813,7 +539,7 @@ class ExcelProcessor:
                     if variant in available_columns:
                         mapping[required] = variant
                         unmapped_available.remove(variant)
-                        print(f"✅ 变体匹配: {required} -> {variant}")
+                        print(f"✅ 变体匹配: {variant} -> {required}")
                         matched = True
                         break
             
@@ -828,24 +554,43 @@ class ExcelProcessor:
                 
                 if similar_columns:
                     best_match, similarity = similar_columns[0]
-                    print(f"🔍 找到相似列名: {required} -> {best_match} (相似度: {similarity:.2f})")
+                    print(f"🔍 找到相似列名: {best_match} -> {required} (相似度: {similarity:.2f})")
                     
                     # 询问用户是否确认映射
-                    confirm = input(f"是否将 '{required}' 映射到 '{best_match}'？(y/n，默认y): ").strip().lower()
+                    confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
                     if confirm not in ['n', 'no', '否']:
                         mapping[required] = best_match
                         unmapped_available.remove(best_match)
-                        print(f"✅ 确认映射: {required} -> {best_match}")
+                        print(f"✅ 确认映射: {best_match} -> {required}")
                     else:
                         print(f"⚠️  跳过映射: {required}")
                 else:
                     print(f"❌ 未找到与 '{required}' 相似的列名")
+                    print(f"🤔 请选择:")
+                    print(f"  1. 手动选择列名 (输入 'm')")
+                    print(f"  2. 跳过此字段 (输入 's')")
+                    
+                    while True:
+                        choice = input(f"对于字段 '{required}' 请选择: ").strip().lower()
+                        if choice == 's':
+                            print(f"⚠️  跳过映射: {required}")
+                            break
+                        elif choice == 'm':
+                            selected_column = self._manual_select_column(required, unmapped_available)
+                            if selected_column:
+                                mapping[required] = selected_column
+                                unmapped_available.remove(selected_column)
+                                unmapped_required.remove(required)
+                                print(f"✅ 手动映射: {selected_column} -> {required}")
+                            break
+                        else:
+                            print("❌ 请输入 'm' 或 's'")
         
         # 显示映射结果
         if mapping:
             print(f"\n📋 列名映射结果:")
             for required, mapped in mapping.items():
-                print(f"  {required} -> {mapped}")
+                print(f"  {mapped} -> {required}")
         
         if unmapped_required:
             print(f"\n⚠️  未映射的列名: {unmapped_required}")
@@ -989,8 +734,9 @@ class ExcelProcessor:
         
         # 询问是否显示字段出现次数
         print("🤔 是否显示字段出现次数？")
-        show_occurrence = input("请选择 (y/n，默认y): ").strip().lower()
-        show_occurrence = show_occurrence not in ['n', 'no', '否']
+        print("⚠️  注意：选择 y 可能会导致程序出现卡顿，特别是在处理大量文件时")
+        show_occurrence = input("请选择 (y/n，默认n): ").strip().lower()
+        show_occurrence = show_occurrence in ['y', 'yes', '是']
         
         if show_occurrence:
             print("📋 可用字段列表（按出现次数排序）:")
@@ -1138,12 +884,24 @@ class ExcelProcessor:
         # 询问是否需要去重
         print("🤔 是否需要去重？")
         print("📝 去重将删除重复的记录，保留第一条")
-        dedup_choice = input("请选择 (y/n，默认n): ").strip().lower()
-        self.deduplicate = dedup_choice in ['y', 'yes', '是']
+        dedup_choice = input("请选择 (y/n，默认y): ").strip().lower()
+        self.deduplicate = dedup_choice not in ['n', 'no', '否']
         
         if not self.deduplicate:
             print("✅ 已选择不去重，将保留所有记录")
             return False, []
+        
+        # 询问是否启用交互式去重
+        print(f"\n🤖 去重模式选择:")
+        print(f"📝 自动去重: 自动保留每组的第一条记录")
+        print(f"🎯 交互式去重: 当发现字段值冲突时，让您选择如何处理")
+        interactive_choice = input("是否启用交互式去重？(y/n，默认y): ").strip().lower()
+        self.enable_interactive_dedup = interactive_choice not in ['n', 'no', '否']
+        
+        if self.enable_interactive_dedup:
+            print("✅ 已启用交互式去重，遇到冲突时会询问您的处理方式")
+        else:
+            print("✅ 使用自动去重模式，将自动保留第一条记录")
         
         # 如果去重，选择去重字段
         print(f"\n📋 请选择去重字段（基于这些字段的组合来判断重复）:")
@@ -1326,28 +1084,131 @@ class ExcelProcessor:
         combined_df = pd.concat(all_data, ignore_index=True)
         print(f"✅ 合并完成，总行数: {len(combined_df)}")
         
-        # 字段补充处理
-        if self.enable_field_supplement and self.field_mappings:
-            print(f"\n🔄 正在补充缺失字段...")
-            combined_df = self.supplement_fields(
-                combined_df, 
-                self.field_mappings, 
-                self.default_values,
-                self.link_field
-            )
+
         
         # 去重处理
         if deduplicate and dedup_fields:
             print(f"\n🔄 正在按字段 {dedup_fields} 去重...")
             before_count = len(combined_df)
-            combined_df = combined_df.drop_duplicates(subset=dedup_fields, keep='first')
-            after_count = len(combined_df)
-            removed_count = before_count - after_count
             
-            print(f"✅ 去重完成:")
+            # 查找重复记录
+            duplicated_mask = combined_df.duplicated(subset=dedup_fields, keep=False)
+            duplicated_records = combined_df[duplicated_mask]
+            
+            # 保存重复记录到实例变量
+            self.duplicate_records = duplicated_records.copy()
+            self.duplicate_count = len(duplicated_records)
+            
+            if len(duplicated_records) > 0:
+                print(f"\n" + "🔍" + "="*58)
+                print(f"📋 发现重复记录详情")
+                print(f"🔍" + "="*58)
+                print(f"📊 重复记录总数: {len(duplicated_records)} 条")
+                print(f"📊 重复组数量: {duplicated_records.groupby(dedup_fields).ngroups} 组")
+                print(f"🔑 去重依据字段: {', '.join(dedup_fields)}")
+                
+                # 按去重字段分组显示重复记录
+                duplicate_groups = duplicated_records.groupby(dedup_fields)
+                group_count = 0
+                
+                for group_key, group_df in duplicate_groups:
+                    group_count += 1
+                    if group_count <= 10:  # 最多显示前10组重复记录
+                        print(f"\n  {'='*50}")
+                        print(f"  📝 重复组 {group_count} (共 {len(group_df)} 条重复记录)")
+                        print(f"  {'='*50}")
+                        
+                        # 显示重复字段的值
+                        if isinstance(group_key, tuple):
+                            for i, field in enumerate(dedup_fields):
+                                print(f"  🔑 {field}: {group_key[i]}")
+                        else:
+                            print(f"  🔑 {dedup_fields[0]}: {group_key}")
+                        
+                        print(f"  {'-'*40}")
+                        
+                        # 显示重复记录的详细信息（最多显示3条）
+                        display_count = min(3, len(group_df))
+                        for idx, (_, row) in enumerate(group_df.head(display_count).iterrows()):
+                            print(f"  📄 第 {idx + 1} 条记录:")
+                            
+                            # 将字段值格式化为表格形式
+                            field_values = []
+                            for field in combined_df.columns:
+                                value = row[field]
+                                if pd.notna(value) and str(value).strip():
+                                    # 处理过长的值
+                                    str_value = str(value)
+                                    if len(str_value) > 20:
+                                        str_value = str_value[:17] + "..."
+                                    field_values.append(f"{field}: {str_value}")
+                                else:
+                                    field_values.append(f"{field}: <空值>")
+                            
+                            # 每行显示2个字段，美化显示
+                            for i in range(0, len(field_values), 2):
+                                line_fields = field_values[i:i+2]
+                                if len(line_fields) == 2:
+                                    print(f"     {line_fields[0]:<30} | {line_fields[1]}")
+                                else:
+                                    print(f"     {line_fields[0]}")
+                            
+                            if idx < display_count - 1:
+                                print(f"     {'-'*35}")
+                        
+                        if len(group_df) > display_count:
+                            print(f"  ⚠️  还有 {len(group_df) - display_count} 条重复记录未显示")
+                    else:
+                        break
+                
+                if group_count > 10:
+                    print(f"\n  ⚠️  还有 {len(duplicate_groups) - 10} 组重复记录未显示")
+                
+                print(f"\n" + "🔧" + "-"*58)
+                if self.enable_interactive_dedup:
+                    print(f"💡 交互式去重策略说明:")
+                    print(f"   • 对于有字段值冲突的重复组，将询问您的处理方式")
+                    print(f"   • 您可以选择保留特定值或创建多条记录")
+                    print(f"   • 所有原始重复记录将保存到Excel的'重复记录'工作表中")
+                else:
+                    print(f"💡 自动去重策略说明:")
+                    print(f"   • 保留每组的第一条记录")
+                    print(f"   • 删除后续所有重复记录") 
+                    print(f"   • 所有重复记录将保存到Excel的'重复记录'工作表中")
+                print(f"🔧" + "-"*58)
+            
+            # 执行去重处理
+            if self.enable_interactive_dedup and len(duplicated_records) > 0:
+                print(f"\n🎯 开始交互式去重处理...")
+                processed_records = []
+                duplicate_groups = duplicated_records.groupby(dedup_fields)
+                
+                for group_key, group_df in duplicate_groups:
+                    resolved_records = self.resolve_field_conflicts(group_key, group_df, dedup_fields)
+                    if not resolved_records.empty:
+                        processed_records.append(resolved_records)
+                
+                if processed_records:
+                    # 重新构建数据框：非重复记录 + 处理后的重复记录
+                    non_duplicated_records = combined_df[~duplicated_mask]
+                    processed_duplicates = pd.concat(processed_records, ignore_index=True)
+                    combined_df = pd.concat([non_duplicated_records, processed_duplicates], ignore_index=True)
+                else:
+                    # 如果所有重复组都被跳过，只保留非重复记录
+                    combined_df = combined_df[~duplicated_mask]
+                
+                after_count = len(combined_df)
+                removed_count = before_count - after_count
+            else:
+                # 传统自动去重
+                combined_df = combined_df.drop_duplicates(subset=dedup_fields, keep='first')
+                after_count = len(combined_df)
+                removed_count = before_count - after_count
+            
+            print(f"\n✅ 去重完成:")
             print(f"  📊 去重前行数: {before_count}")
             print(f"  📊 去重后行数: {after_count}")
-            print(f"  删除重复记录: {removed_count}")
+            print(f"  🗑️  删除重复记录: {removed_count}")
             
             if removed_count > 0:
                 print(f"  📈 去重率: {removed_count/before_count*100:.1f}%")
@@ -1424,27 +1285,10 @@ class ExcelProcessor:
                     len(self.selected_fields),
                     '是' if self.deduplicate else '否',
                     len(self.dedup_fields) if self.deduplicate else 0,
-                    len(df) - len(df.drop_duplicates(subset=self.dedup_fields)) if self.deduplicate and self.dedup_fields else 0
+                    self.duplicate_count - len(df) if self.deduplicate and self.duplicate_count > 0 else 0
                 ]
                 
-                # 添加字段补充统计
-                if self.enable_field_supplement:
-                    stats_items.extend([
-                        '是否启用字段补充',
-                        '关联字段',
-                        '补充字段数',
-                        '字段补充成功率'
-                    ])
-                    # 计算补充成功率（这里简化处理，实际应该统计具体的补充情况）
-                    stats_values.extend([
-                        '是',
-                        self.link_field,
-                        len(self.field_mappings),
-                        '100.0%'  # 简化显示
-                    ])
-                else:
-                    stats_items.append('是否启用字段补充')
-                    stats_values.append('否')
+
                 
                 stats_items.append('处理时间')
                 stats_values.append(pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -1465,10 +1309,34 @@ class ExcelProcessor:
                 }
                 field_df = pd.DataFrame(field_info)
                 field_df.to_excel(writer, sheet_name='字段信息', index=False)
+                
+                # 重复记录表（如果有重复记录）
+                sheet_names = ['合并数据', '处理统计', '字段信息']
+                if not self.duplicate_records.empty:
+                    # 添加重复标记列
+                    duplicate_export = self.duplicate_records.copy()
+                    
+                    # 为重复记录添加分组信息
+                    if self.dedup_fields:
+                        duplicate_groups = duplicate_export.groupby(self.dedup_fields)
+                        group_ids = []
+                        group_sizes = []
+                        
+                        for group_id, (group_key, group_df) in enumerate(duplicate_groups, 1):
+                            for _ in range(len(group_df)):
+                                group_ids.append(group_id)
+                                group_sizes.append(len(group_df))
+                        
+                        duplicate_export.insert(0, '重复组ID', group_ids)
+                        duplicate_export.insert(1, '组内重复数', group_sizes)
+                    
+                    duplicate_export.to_excel(writer, sheet_name='重复记录', index=False)
+                    sheet_names.append('重复记录')
+                    print(f"📋 重复记录已保存到 '重复记录' 工作表，共 {len(self.duplicate_records)} 条记录")
             
             print(f"✅ 数据已成功导出到: {output_path}")
             print(f"总共导出 {len(df)} 条记录")
-            print(f"📋 包含工作表: 合并数据、处理统计、字段信息")
+            print(f"📋 包含工作表: {', '.join(sheet_names)}")
             
             return output_path
             
@@ -1504,36 +1372,13 @@ class ExcelProcessor:
         print("🎯 Excel文件处理工具 v2.4")
         print("=" * 60)
         
-        # 配置智能匹配选项
+        # 显示智能匹配配置（默认启用，不询问用户）
         print(f"\n=== 智能匹配配置 ===")
-        print(f"🤖 当前智能匹配设置:")
+        print(f"🤖 智能匹配设置（已启用）:")
         print(f"  • 智能匹配: {'启用' if self.enable_smart_matching else '禁用'}")
         print(f"  • 自动清理列名: {'启用' if self.auto_clean_columns else '禁用'}")
         print(f"  • 相似度阈值: {self.similarity_threshold}")
-        
-        change_settings = input("是否修改智能匹配设置？(y/n，默认n): ").strip().lower()
-        if change_settings in ['y', 'yes', '是']:
-            # 配置智能匹配
-            smart_choice = input("是否启用智能列名匹配？(y/n，默认y): ").strip().lower()
-            self.enable_smart_matching = smart_choice not in ['n', 'no', '否']
-            
-            # 配置自动清理
-            clean_choice = input("是否自动清理列名（去除空格、特殊字符）？(y/n，默认y): ").strip().lower()
-            self.auto_clean_columns = clean_choice not in ['n', 'no', '否']
-            
-            # 配置相似度阈值
-            try:
-                threshold_input = input(f"设置相似度阈值 (0.0-1.0，默认{self.similarity_threshold}): ").strip()
-                if threshold_input:
-                    threshold = float(threshold_input)
-                    if 0.0 <= threshold <= 1.0:
-                        self.similarity_threshold = threshold
-                    else:
-                        print(f"⚠️  阈值超出范围，使用默认值 {self.similarity_threshold}")
-            except ValueError:
-                print(f"⚠️  输入格式错误，使用默认值 {self.similarity_threshold}")
-            
-            print(f"✅ 智能匹配设置已更新")
+        print(f"✅ 使用默认智能匹配设置，提升处理效率")
         
         try:
             # 1. 文件选择
@@ -1544,6 +1389,11 @@ class ExcelProcessor:
             files = self.select_files(folder_path)
             if not files:
                 print("❌ 未选择任何文件，程序退出")
+                return
+            
+            # 1.5. 文件备份
+            if not self.backup_files(files):
+                print("❌ 备份失败，程序退出")
                 return
             
             # 2. 字段分析
@@ -1558,25 +1408,7 @@ class ExcelProcessor:
                 print("❌ 未选择任何字段，程序退出")
                 return
             
-            # 3.5. 字段补充配置
-            analysis_result = self.analyze_field_supplement_situation(files, selected_fields)
-            self.enable_field_supplement, self.default_values, self.link_field = self.configure_field_supplement(analysis_result, selected_fields)
-            
-            if self.enable_field_supplement:
-                # 构建字段映射
-                self.field_mappings = {}
-                missing_fields = [field for field, files in analysis_result['files_missing_fields'].items() if files]
-                
-                for field in missing_fields:
-                    mapping = self.build_field_mapping(analysis_result['files_with_all_fields'], field, self.link_field)
-                    if mapping:
-                        self.field_mappings[field] = mapping
-                
-                # 确保缺失字段被选中
-                for field in missing_fields:
-                    if field not in selected_fields:
-                        selected_fields.append(field)
-                        print(f"📝 自动添加{field}字段到选择列表")
+
             
             # 4. 去重配置
             deduplicate, dedup_fields = self.configure_deduplication()
@@ -1603,8 +1435,14 @@ class ExcelProcessor:
                 print(f"📋 选择字段数: {len(selected_fields)}")
                 if deduplicate and dedup_fields:
                     print(f"🔍 去重字段: {', '.join(dedup_fields)}")
-                if self.enable_field_supplement:
-                    print(f"🔧 字段补充: 已启用，补充字段数 {len(self.field_mappings)}")
+                    if self.duplicate_count > 0:
+                        removed_count = self.duplicate_count - len(result_df)
+                        print(f"📊 发现重复记录: {self.duplicate_count} 条")
+                        print(f"🗑️  删除重复记录: {removed_count} 条")
+                        print(f"💾 重复记录已保存到 '重复记录' 工作表")
+                    else:
+                        print(f"✅ 未发现重复记录")
+
                 
 
             
@@ -1612,6 +1450,267 @@ class ExcelProcessor:
             print("\n\n⚠️  程序被用户中断")
         except Exception as e:
             print(f"\n❌ 程序执行出错: {str(e)}")
+    
+    def resolve_field_conflicts(self, group_key, group_df: pd.DataFrame, dedup_fields: List[str]) -> pd.DataFrame:
+        """
+        解决字段值冲突，让用户选择如何处理不同的字段值
+        
+        Args:
+            group_key: 重复组的键值
+            group_df: 重复组的数据框
+            dedup_fields: 去重字段列表
+            
+        Returns:
+            处理后的数据框
+        """
+        if not self.enable_interactive_dedup or len(group_df) <= 1:
+            return group_df.head(1)  # 默认保留第一条
+        
+        # 检查非去重字段是否有冲突
+        non_dedup_fields = [field for field in group_df.columns if field not in dedup_fields]
+        conflicts = {}
+        
+        for field in non_dedup_fields:
+            # 获取唯一值，保持出现顺序
+            seen = set()
+            unique_values = []
+            for value in group_df[field].dropna():
+                if value not in seen:
+                    seen.add(value)
+                    unique_values.append(value)
+            
+            if len(unique_values) > 1:
+                conflicts[field] = unique_values
+        
+        if not conflicts:
+            return group_df.head(1)  # 没有冲突，保留第一条
+        
+        print(f"\n{'🔧' + '='*60}")
+        print(f"⚠️  发现字段值冲突！")
+        print(f"{'🔧' + '='*60}")
+        
+        # 显示重复组信息
+        if isinstance(group_key, tuple):
+            for i, field in enumerate(dedup_fields):
+                print(f"🔑 {field}: {group_key[i]}")
+        else:
+            print(f"🔑 {dedup_fields[0]}: {group_key}")
+        
+        print(f"\n📊 该组有 {len(group_df)} 条记录，以下字段存在不同值:")
+        
+        # 显示冲突的字段和值
+        for field, values in conflicts.items():
+            print(f"\n📝 字段 '{field}' 的不同值:")
+            for i, value in enumerate(values, 1):
+                if pd.isna(value):
+                    print(f"  {i}. <空值>")
+                else:
+                    print(f"  {i}. {value}")
+        
+        print(f"\n🤔 请选择处理方式:")
+        print(f"  1. 保留第一条记录 (默认)")
+        print(f"  2. 手动选择每个冲突字段的值")
+        print(f"  3. 为每个不同值创建单独记录")
+        print(f"  4. 跳过此组，不做处理")
+        
+        while True:
+            try:
+                choice = input("\n请选择处理方式 (1-4，默认1): ").strip()
+                if not choice:
+                    choice = "1"
+                
+                if choice == "1":
+                    print("✅ 保留第一条记录")
+                    return group_df.head(1)
+                
+                elif choice == "2":
+                    return self._manual_resolve_conflicts(group_df, conflicts, dedup_fields)
+                
+                elif choice == "3":
+                    print("✅ 为每个不同值创建单独记录")
+                    return self._create_separate_records(group_df, conflicts, dedup_fields)
+                
+                elif choice == "4":
+                    print("⚠️  跳过此组")
+                    return pd.DataFrame()  # 返回空数据框
+                
+                else:
+                    print("❌ 请输入 1-4 之间的数字")
+                    
+            except KeyboardInterrupt:
+                print("\n⚠️  用户中断，保留第一条记录")
+                return group_df.head(1)
+    
+    def _manual_resolve_conflicts(self, group_df: pd.DataFrame, conflicts: Dict, dedup_fields: List[str]) -> pd.DataFrame:
+        """手动解决冲突"""
+        result_record = group_df.iloc[0].copy()  # 基于第一条记录
+        
+        print(f"\n🔧 开始手动解决冲突...")
+        print(f"📄 基础记录（第一条）: {dict(result_record)}")
+        
+        for field, values in conflicts.items():
+            print(f"\n📝 请选择字段 '{field}' 的值:")
+            print(f"🔍 当前值: {result_record[field]}")
+            print(f"📋 可选值:")
+            
+            for i, value in enumerate(values, 1):
+                if pd.isna(value):
+                    print(f"  {i}. <空值>")
+                else:
+                    print(f"  {i}. {value}")
+            
+            while True:
+                try:
+                    choice = input(f"请选择 (1-{len(values)}): ").strip()
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(values):
+                        selected_value = values[choice_idx]
+                        old_value = result_record[field]
+                        result_record[field] = selected_value
+                        
+                        if pd.isna(selected_value):
+                            print(f"✅ 已选择: <空值>")
+                        else:
+                            print(f"✅ 已选择: {selected_value}")
+                        
+                        print(f"🔄 字段 '{field}' 更新: {old_value} → {selected_value}")
+                        break
+                    else:
+                        print("❌ 编号超出范围，请重新选择")
+                except ValueError:
+                    print("❌ 请输入有效的数字")
+        
+        print(f"\n✅ 冲突解决完成！")
+        print(f"📄 最终记录: {dict(result_record)}")
+        return pd.DataFrame([result_record])
+    
+    def _create_separate_records(self, group_df: pd.DataFrame, conflicts: Dict, dedup_fields: List[str]) -> pd.DataFrame:
+        """为不同值创建单独记录"""
+        # 找到最多值的字段作为主字段
+        main_field = max(conflicts.keys(), key=lambda f: len(conflicts[f]))
+        main_values = conflicts[main_field]
+        
+        print(f"📝 以字段 '{main_field}' 为主字段创建 {len(main_values)} 条记录")
+        
+        result_records = []
+        base_record = group_df.iloc[0].copy()
+        
+        for i, main_value in enumerate(main_values):
+            new_record = base_record.copy()
+            new_record[main_field] = main_value
+            
+            # 为其他冲突字段选择对应的值
+            for field in conflicts:
+                if field != main_field:
+                    # 找到与main_value对应的记录中该字段的值
+                    matching_records = group_df[group_df[main_field] == main_value]
+                    if not matching_records.empty:
+                        new_record[field] = matching_records.iloc[0][field]
+                    # 如果没有完全匹配的记录，保持原值
+            
+            result_records.append(new_record)
+            print(f"  📄 记录 {i+1}: {main_field}={main_value}")
+        
+        return pd.DataFrame(result_records)
+
+    def backup_files(self, files: List[str]) -> bool:
+        """
+        备份选中的Excel文件
+        
+        Args:
+            files: 要备份的文件列表
+            
+        Returns:
+            备份是否成功
+        """
+        print(f"\n=== 文件备份 ===")
+        
+        # 询问是否要备份
+        backup_choice = input("🤔 是否要备份选中的Excel文件？(y/n，默认y): ").strip().lower()
+        if backup_choice in ['n', 'no', '否']:
+            print("✅ 跳过备份，直接处理文件")
+            return True
+        
+        # 创建备份目录
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = f"backup_{timestamp}"
+        
+        try:
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            
+            print(f"📁 创建备份目录: {backup_dir}")
+            
+            # 备份每个文件
+            backup_success = 0
+            backup_failed = 0
+            
+            for file_path in files:
+                try:
+                    filename = os.path.basename(file_path)
+                    backup_path = os.path.join(backup_dir, filename)
+                    
+                    # 如果备份目录中已有同名文件，添加序号
+                    counter = 1
+                    original_backup_path = backup_path
+                    while os.path.exists(backup_path):
+                        name, ext = os.path.splitext(original_backup_path)
+                        backup_path = f"{name}_{counter}{ext}"
+                        counter += 1
+                    
+                    # 复制文件
+                    import shutil
+                    shutil.copy2(file_path, backup_path)
+                    print(f"✅ 已备份: {filename} -> {os.path.basename(backup_path)}")
+                    backup_success += 1
+                    
+                except Exception as e:
+                    print(f"❌ 备份失败: {os.path.basename(file_path)} - {str(e)}")
+                    backup_failed += 1
+            
+            print(f"\n📊 备份结果:")
+            print(f"  ✅ 成功备份: {backup_success} 个文件")
+            if backup_failed > 0:
+                print(f"  ❌ 备份失败: {backup_failed} 个文件")
+            print(f"  📁 备份位置: {os.path.abspath(backup_dir)}")
+            
+            if backup_failed > 0:
+                continue_choice = input("\n⚠️  部分文件备份失败，是否继续处理？(y/n，默认y): ").strip().lower()
+                if continue_choice in ['n', 'no', '否']:
+                    print("❌ 用户选择退出")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ 创建备份目录失败: {str(e)}")
+            continue_choice = input("⚠️  备份失败，是否继续处理？(y/n，默认n): ").strip().lower()
+            return continue_choice in ['y', 'yes', '是']
+
+    def _manual_select_column(self, required_field: str, available_columns: List[str]) -> str:
+        """手动选择列名"""
+        if not available_columns:
+            print(f"  ⚠️  没有可用的列名可选择")
+            return None
+        
+        print(f"\n  📋 可用的列名:")
+        for i, column in enumerate(available_columns, 1):
+            print(f"    {i:2d}. {column}")
+        
+        print(f"\n  📝 请选择要映射到字段 '{required_field}' 的列名:")
+        while True:
+            try:
+                choice = input("  请输入列名编号: ").strip()
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(available_columns):
+                    selected_column = available_columns[choice_idx]
+                    print(f"  ✅ 选择了列名: {selected_column}")
+                    return selected_column
+                else:
+                    print("  ❌ 编号超出范围，请重新选择")
+            except ValueError:
+                print("  ❌ 请输入有效的数字")
 
 def main():
     """主函数"""
