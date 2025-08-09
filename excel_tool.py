@@ -12,6 +12,16 @@ Excel工具集 - 整合版本
 import sys
 import os
 import traceback
+import time
+
+def safe_input(prompt="", default=""):
+    """安全的输入函数，处理在打包环境中可能出现的输入流问题"""
+    try:
+        return input(prompt)
+    except (EOFError, RuntimeError):
+        # 在打包环境中如果无法获取输入，使用默认值
+        print(f"输入流不可用，使用默认值: {default}")
+        return default
 
 def show_welcome():
     """显示欢迎界面"""
@@ -117,7 +127,7 @@ def main():
                 show_menu()
                 
                 # 获取用户选择
-                choice = input("\n请输入选择 (1/2/3): ").strip()
+                choice = safe_input("\n请输入选择 (1/2/3): ", "3").strip()
                 
                 if choice == '1':
                     # 运行合并功能
@@ -128,7 +138,7 @@ def main():
                         print("\n❌ 合并功能执行失败")
                     
                     # 询问是否继续
-                    continue_choice = input("\n是否返回主菜单？(y/n，默认y): ").strip().lower()
+                    continue_choice = safe_input("\n是否返回主菜单？(y/n，默认y): ", "y").strip().lower()
                     if continue_choice in ['n', 'no', '否']:
                         print("👋 程序退出")
                         break
@@ -142,7 +152,7 @@ def main():
                         print("\n❌ 同步功能执行失败")
                     
                     # 询问是否继续
-                    continue_choice = input("\n是否返回主菜单？(y/n，默认y): ").strip().lower()
+                    continue_choice = safe_input("\n是否返回主菜单？(y/n，默认y): ", "y").strip().lower()
                     if continue_choice in ['n', 'no', '否']:
                         print("👋 程序退出")
                         break
@@ -164,7 +174,7 @@ def main():
                 traceback.print_exc()
                 
                 # 询问是否继续
-                continue_choice = input("\n是否返回主菜单？(y/n，默认y): ").strip().lower()
+                continue_choice = safe_input("\n是否返回主菜单？(y/n，默认y): ", "y").strip().lower()
                 if continue_choice in ['n', 'no', '否']:
                     print("👋 程序退出")
                     break
@@ -176,7 +186,12 @@ def main():
     
     finally:
         print("\n感谢使用Excel工具集！")
-        input("按回车键退出...")
+        try:
+            safe_input("按回车键退出...")
+        except Exception:
+            # 处理在打包环境中可能出现的输入流问题
+            print("程序将在3秒后自动退出...")
+            time.sleep(3)
 
 if __name__ == "__main__":
     main() 
