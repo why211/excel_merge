@@ -16,7 +16,7 @@ from pathlib import Path
 class ExcelToolDeployer:
     def __init__(self):
         self.version = "1.0.0"
-        self.project_name = "Excel工具集"
+        self.project_name = "Excel合并同步工具V1.0"
         self.build_date = datetime.now().strftime("%Y%m%d_%H%M%S")
         
     def print_header(self, title):
@@ -75,6 +75,7 @@ class ExcelToolDeployer:
             "--onefile",
             "--windowed",
             f"--name={self.project_name}",
+            "--icon=excel.jpg",
             "--add-data=excel_merger.py;.",
             "--add-data=excel_processor.py;.",
             "--distpath=dist",
@@ -82,6 +83,11 @@ class ExcelToolDeployer:
             "--clean",
             "excel_tool.py"
         ]
+        
+        # 如果没有图标文件，移除图标参数
+        if not os.path.exists("excel.jpg"):
+            gui_cmd.remove("--icon=excel.jpg")
+            print("⚠️  未找到图标文件 excel.jpg，将使用默认图标")
         
         success1, _ = self.run_command(
             " ".join(gui_cmd),

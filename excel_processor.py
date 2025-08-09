@@ -2305,34 +2305,24 @@ class ExcelProcessor:
     
     def configure_conflict_handling(self):
         """配置冲突处理方式"""
+        # 检查源文件数量，只有多个源文件时才需要配置冲突处理
+        source_file_count = 0
+        if hasattr(self, 'source_files') and self.source_files:
+            source_file_count = len(self.source_files)
+        elif hasattr(self, 'source_file') and self.source_file:
+            source_file_count = 1
+        
+        if source_file_count <= 1:
+            # 只有一个或没有源文件，使用ask模式处理与目标文件的冲突
+            self.conflict_handling = "ask"  # 单源文件也需要询问冲突处理
+            return
+        
         print(f"\n=== 步骤4: 冲突处理配置 ===")
         
-        print("🤔 当多个源文件对同一记录提供不同数据时，如何处理冲突？")
-        print("1. 询问用户选择（推荐）")
-        print("2. 使用第一个源文件的数据")
-        print("3. 使用最后一个源文件的数据")
-        print("4. 跳过冲突的记录")
-        
-        while True:
-            choice = input("\n请选择冲突处理方式 (1/2/3/4): ").strip()
-            if choice == "1":
-                self.conflict_handling = "ask"
-                print("✅ 已选择：询问用户选择")
-                break
-            elif choice == "2":
-                self.conflict_handling = "first"
-                print("✅ 已选择：使用第一个源文件的数据")
-                break
-            elif choice == "3":
-                self.conflict_handling = "last"
-                print("✅ 已选择：使用最后一个源文件的数据")
-                break
-            elif choice == "4":
-                self.conflict_handling = "skip"
-                print("✅ 已选择：跳过冲突的记录")
-                break
-            else:
-                print("❌ 无效选择，请输入 1、2、3 或 4")
+        # 设置为询问模式，让用户对每个冲突都进行判断
+        self.conflict_handling = "ask"
+        print("📋 冲突处理策略：当多个源文件对同一记录提供不同数据时，将询问用户选择")
+        print("✅ 配置完成")
     
     def set_multi_sync_output(self):
         """设置多源同步输出"""
@@ -2421,6 +2411,9 @@ class ExcelProcessor:
             # 执行多源同步
             updated_df = self.perform_multi_sync(target_df, source_data)
             
+            # 询问是否要插入源文件中目标文件没有的新记录
+            updated_df = self.ask_for_new_records_insertion(updated_df, source_data, target_df)
+            
             # 保存更新后的文件
             self.save_multi_sync_file(updated_df)
             
@@ -2495,8 +2488,9 @@ class ExcelProcessor:
                 if not actual_update_field:
                     continue
                 
-                # 收集所有源文件中的值
-                field_values = {}
+                # 逐个处理每个源文件，确保每个源文件都与目标文件进行冲突检查
+                current_value = updated_df.at[target_idx, actual_update_field]
+                
                 for source_name, source_row in matching_data.items():
                     # 使用建立的字段映射关系确定源文件中的字段名称
                     source_field = None
@@ -2507,97 +2501,47 @@ class ExcelProcessor:
                     if not source_field:
                         source_field = self.find_actual_field_name(source_data[source_name], update_field)
                     
-                    if source_field and source_field in source_row.index and not pd.isna(source_row[source_field]):
-                        field_values[source_name] = str(source_row[source_field]).strip()
-                
-                if not field_values:
-                    continue
-                
-                # 检查是否有冲突（多个不同的值）
-                unique_values = set(field_values.values())
-                if len(unique_values) == 1:
-                    # 没有冲突，检查是否需要更新
-                    value = list(unique_values)[0]
-                    current_value = updated_df.at[target_idx, actual_update_field]
+                    if not (source_field and source_field in source_row.index and not pd.isna(source_row[source_field])):
+                        continue
                     
-                    # 如果当前值和新值相同，跳过更新
+                    source_value = str(source_row[source_field]).strip()
+                    
+                    # 如果当前值和源值相同，跳过更新
                     if (not pd.isna(current_value) and 
-                        str(current_value).strip() == str(value).strip()):
+                        str(current_value).strip() == source_value):
                         continue  # 值相同，无需更新
                     
+                    # 检查目标字段是否已有值，如果有则需要询问用户
+                    has_current_value = (
+                        not pd.isna(current_value) and 
+                        str(current_value).strip() != '' and 
+                        str(current_value).strip().lower() != 'nan'
+                    )
+                    
+                    if has_current_value:
+                        should_replace = self.ask_for_replacement(
+                            actual_update_field, 
+                            link_value, 
+                            current_value, 
+                            source_value
+                        )
+                        if not should_replace:
+                            continue  # 跳过此源文件的更新
+                    
+                    # 执行更新
                     # 确保数据类型兼容，先将列转换为object类型
                     if updated_df[actual_update_field].dtype != 'object':
                         updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
                     
-                    if pd.isna(value) or value == '':
+                    if pd.isna(source_value) or source_value == '':
                         updated_df.at[target_idx, actual_update_field] = None
                     else:
                         # 将值转换为字符串以避免类型不兼容警告
-                        updated_df.at[target_idx, actual_update_field] = str(value)
+                        updated_df.at[target_idx, actual_update_field] = str(source_value)
+                    
+                    # 更新current_value为新设置的值，供下一个源文件使用
+                    current_value = updated_df.at[target_idx, actual_update_field]
                     total_updates += 1
-                else:
-                    # 有冲突，根据配置处理
-                    if self.conflict_handling == "ask":
-                        # 询问用户选择
-                        choice = self.ask_user_for_conflict_resolution(link_value, update_field, field_values)
-                        if choice:
-                            current_value = updated_df.at[target_idx, actual_update_field]
-                            
-                            # 检查是否需要更新
-                            if (pd.isna(current_value) or 
-                                str(current_value).strip() != str(choice).strip()):
-                                # 确保数据类型兼容，先将列转换为object类型
-                                if updated_df[actual_update_field].dtype != 'object':
-                                    updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
-                                
-                                if pd.isna(choice) or choice == '':
-                                    updated_df.at[target_idx, actual_update_field] = None
-                                else:
-                                    updated_df.at[target_idx, actual_update_field] = str(choice)
-                                total_updates += 1
-                            conflicts_resolved += 1
-                    elif self.conflict_handling == "first":
-                        # 使用第一个源文件的数据
-                        first_source = list(field_values.keys())[0]
-                        value = field_values[first_source]
-                        current_value = updated_df.at[target_idx, actual_update_field]
-                        
-                        # 检查是否需要更新
-                        if (pd.isna(current_value) or 
-                            str(current_value).strip() != str(value).strip()):
-                            # 确保数据类型兼容，先将列转换为object类型
-                            if updated_df[actual_update_field].dtype != 'object':
-                                updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
-                            
-                            if pd.isna(value) or value == '':
-                                updated_df.at[target_idx, actual_update_field] = None
-                            else:
-                                updated_df.at[target_idx, actual_update_field] = str(value)
-                            total_updates += 1
-                        conflicts_resolved += 1
-                    elif self.conflict_handling == "last":
-                        # 使用最后一个源文件的数据
-                        last_source = list(field_values.keys())[-1]
-                        value = field_values[last_source]
-                        current_value = updated_df.at[target_idx, actual_update_field]
-                        
-                        # 检查是否需要更新
-                        if (pd.isna(current_value) or 
-                            str(current_value).strip() != str(value).strip()):
-                            # 确保数据类型兼容，先将列转换为object类型
-                            if updated_df[actual_update_field].dtype != 'object':
-                                updated_df[actual_update_field] = updated_df[actual_update_field].astype('object')
-                            
-                            if pd.isna(value) or value == '':
-                                updated_df.at[target_idx, actual_update_field] = None
-                            else:
-                                updated_df.at[target_idx, actual_update_field] = str(value)
-                            total_updates += 1
-                        conflicts_resolved += 1
-                    elif self.conflict_handling == "skip":
-                        # 跳过冲突的记录
-                        conflicts_skipped += 1
-                        continue
         
         print(f"✅ 多源同步完成:")
         print(f"  📊 总更新数: {total_updates}")
@@ -2605,6 +2549,178 @@ class ExcelProcessor:
         print(f"  ⏭️  冲突跳过数: {conflicts_skipped}")
         
         return updated_df
+    
+    def ask_for_new_records_insertion(self, updated_df: pd.DataFrame, source_data: Dict[str, pd.DataFrame], original_target_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        询问用户是否要插入源文件中目标文件没有的新记录
+        
+        Args:
+            updated_df: 已更新的目标数据框
+            source_data: 源数据字典 {文件名: 数据框}
+            original_target_df: 原始目标数据框
+            
+        Returns:
+            可能包含新记录的数据框
+        """
+        print(f"\n=== 步骤7: 新记录插入检查 ===")
+        
+        # 确定关联字段的实际名称
+        actual_link_field = self.find_actual_field_name(updated_df, self.link_field)
+        if not actual_link_field:
+            print(f"❌ 无法确定关联字段，跳过新记录检查")
+            return updated_df
+        
+        # 获取目标文件中已有的关联字段值
+        existing_link_values = set()
+        existing_link_raw_values = set()  # 保存原始值用于精确比较
+        for _, row in updated_df.iterrows():
+            raw_value = row[actual_link_field]
+            if not pd.isna(raw_value):
+                existing_link_raw_values.add(raw_value)
+                # 同时保存字符串形式用于兼容性
+                str_value = str(raw_value).strip()
+                if str_value != '':
+                    existing_link_values.add(str_value)
+        
+        # 查找源文件中目标文件没有的新记录
+        new_records = []
+        new_records_info = []
+        
+        for source_name, source_df in source_data.items():
+            # 确定源文件中的关联字段名称
+            source_link_field = None
+            if source_name in self.source_field_mapping:
+                source_link_field = self.source_field_mapping[source_name].get(self.link_field)
+            
+            if not source_link_field:
+                source_link_field = self.find_actual_field_name(source_df, self.link_field)
+            
+            if not source_link_field or source_link_field not in source_df.columns:
+                continue
+            
+            # 查找新记录
+            for _, source_row in source_df.iterrows():
+                source_raw_value = source_row[source_link_field]
+                if pd.isna(source_raw_value):
+                    continue
+                
+                source_str_value = str(source_raw_value).strip()
+                if source_str_value == '':
+                    continue
+                
+                # 检查是否为新记录：既不在原始值中，也不在字符串值中
+                is_existing_raw = source_raw_value in existing_link_raw_values
+                is_existing_str = source_str_value in existing_link_values
+                
+                # 对于数值类型，还要检查数值相等性（如 3.0 == 3）
+                is_existing_numeric = False
+                if isinstance(source_raw_value, (int, float)):
+                    for existing_raw in existing_link_raw_values:
+                        if isinstance(existing_raw, (int, float)):
+                            try:
+                                if float(source_raw_value) == float(existing_raw):
+                                    is_existing_numeric = True
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                
+                # 如果不是已存在的记录，则为新记录
+                if not (is_existing_raw or is_existing_str or is_existing_numeric):
+                    
+                    # 检查是否已经在new_records中（避免重复）
+                    already_exists = any(
+                        str(record[actual_link_field]).strip() == source_str_value 
+                        for record in new_records
+                    )
+                    
+                    if not already_exists:
+                        # 创建新记录，只包含目标文件的列
+                        new_record = {}
+                        for col in updated_df.columns:
+                            new_record[col] = None  # 默认为空
+                        
+                        # 设置关联字段值，保持原始数据类型
+                        original_value = source_row[source_link_field]
+                        new_record[actual_link_field] = original_value
+                        
+                        # 尝试映射其他字段的值
+                        for target_field in updated_df.columns:
+                            if target_field == actual_link_field:
+                                continue
+                                
+                            # 查找对应的源字段
+                            source_field = None
+                            if source_name in self.source_field_mapping:
+                                source_field = self.source_field_mapping[source_name].get(target_field)
+                            
+                            if not source_field:
+                                source_field = self.find_actual_field_name(source_df, target_field)
+                            
+                            if source_field and source_field in source_row.index and not pd.isna(source_row[source_field]):
+                                # 保持原始数据类型，只对字符串类型进行strip操作
+                                original_field_value = source_row[source_field]
+                                if isinstance(original_field_value, str):
+                                    new_record[target_field] = original_field_value.strip()
+                                else:
+                                    new_record[target_field] = original_field_value
+                        
+                        new_records.append(new_record)
+                        new_records_info.append({
+                            'link_value': source_str_value,
+                            'source_file': source_name
+                        })
+        
+        if not new_records:
+            print("✅ 源文件中没有发现目标文件缺少的新记录")
+            return updated_df
+        
+        print(f"🔍 发现 {len(new_records)} 条目标文件中不存在的新记录:")
+        for i, info in enumerate(new_records_info, 1):
+            print(f"  {i}. {self.link_field}: {info['link_value']} (来自 {info['source_file']})")
+        
+        print(f"\n🤔 是否要将这些新记录插入到目标文件中？")
+        print(f"  1. 是 - 插入所有新记录")
+        print(f"  2. 否 - 不插入新记录")
+        print(f"  3. 选择性插入 - 逐个选择要插入的记录")
+        
+        while True:
+            choice = input("请选择 (1/2/3): ").strip()
+            if choice == '1':
+                # 插入所有新记录
+                new_records_df = pd.DataFrame(new_records)
+                result_df = pd.concat([updated_df, new_records_df], ignore_index=True)
+                print(f"✅ 已插入 {len(new_records)} 条新记录")
+                return result_df
+            elif choice == '2':
+                # 不插入新记录
+                print("✅ 跳过新记录插入")
+                return updated_df
+            elif choice == '3':
+                # 选择性插入
+                selected_records = []
+                for i, (record, info) in enumerate(zip(new_records, new_records_info)):
+                    while True:
+                        insert_choice = input(f"是否插入记录 {i+1} ({self.link_field}: {info['link_value']})？(y/n): ").strip().lower()
+                        if insert_choice in ['y', 'yes', '是']:
+                            selected_records.append(record)
+                            print(f"  ✅ 已选择插入")
+                            break
+                        elif insert_choice in ['n', 'no', '否']:
+                            print(f"  ❌ 跳过此记录")
+                            break
+                        else:
+                            print("❌ 请输入 y/n")
+                
+                if selected_records:
+                    selected_records_df = pd.DataFrame(selected_records)
+                    result_df = pd.concat([updated_df, selected_records_df], ignore_index=True)
+                    print(f"✅ 已插入 {len(selected_records)} 条选中的新记录")
+                    return result_df
+                else:
+                    print("✅ 没有选择任何记录进行插入")
+                    return updated_df
+            else:
+                print("❌ 请输入有效选择 (1/2/3)")
     
     def ask_user_for_conflict_resolution(self, link_value: str, field_name: str, field_values: Dict[str, str]) -> str:
         """

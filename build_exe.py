@@ -41,8 +41,8 @@ def build_exe():
         "pyinstaller",
         "--onefile",                    # 打包成单个exe文件
         "--windowed",                   # 无控制台窗口（GUI模式）
-        "--name=Excel工具集",            # 输出文件名
-        "--icon=icon.ico",              # 图标文件（如果存在）
+        "--name=Excel合并同步工具V1.0",   # 输出文件名
+        "--icon=excel.jpg",             # 图标文件
         "--add-data=excel_merger.py;.", # 包含合并模块
         "--add-data=excel_processor.py;.", # 包含处理模块
         "--distpath=dist",              # 输出目录
@@ -53,8 +53,9 @@ def build_exe():
     ]
     
     # 如果没有图标文件，移除图标参数
-    if not os.path.exists("icon.ico"):
-        cmd.remove("--icon=icon.ico")
+    if not os.path.exists("excel.jpg"):
+        cmd.remove("--icon=excel.jpg")
+        print("⚠️  未找到图标文件 excel.jpg，将使用默认图标")
     
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -74,7 +75,7 @@ def build_console_exe():
         "pyinstaller",
         "--onefile",                    # 打包成单个exe文件
         "--console",                    # 保留控制台窗口
-        "--name=Excel工具集_console",    # 输出文件名
+        "--name=Excel合并同步工具V1.0_console", # 输出文件名
         "--add-data=excel_merger.py;.", # 包含合并模块
         "--add-data=excel_processor.py;.", # 包含处理模块
         "--distpath=dist",              # 输出目录
@@ -94,16 +95,18 @@ def build_console_exe():
 
 def create_readme():
     """创建使用说明文件"""
-    readme_content = """# Excel工具集
+    readme_content = """# Excel合并同步工具V1.0
 
 ## 功能介绍
-- Excel文件合并：将多个Excel文件合并成一个文件
+- Excel文件合并：将多个Excel文件合并成一个文件，支持智能去重
 - Excel数据同步：将一个或多个Excel文件的数据同步到另一个文件
 - 智能列名匹配和字段补充功能
+- 冲突数据处理：支持用户选择处理方式
+- 新记录插入：自动检测并询问是否插入新记录
 
 ## 使用方法
-1. 双击运行 `Excel工具集.exe`（GUI版本，推荐）
-2. 或运行 `Excel工具集_console.exe`（控制台版本，便于调试）
+1. 双击运行 `Excel合并同步工具V1.0.exe`（GUI版本，推荐）
+2. 或运行 `Excel合并同步工具V1.0_console.exe`（控制台版本，便于调试）
 3. 根据提示选择相应功能
 4. 按照程序引导完成操作
 
@@ -111,11 +114,12 @@ def create_readme():
 - 请确保Excel文件没有被其他程序占用
 - 建议在处理前备份重要数据
 - 程序会自动创建备份文件
+- 支持.xlsx、.xls等Excel格式
 
 ## 版本信息
 - 版本：v1.0
-- 作者：小王
-- 更新日期：2025年8月8日
+- 更新日期：2025年8月10日
+- 新增功能：多源同步、冲突处理、新记录插入
 
 ## 技术支持
 如有问题请联系开发者
@@ -128,7 +132,7 @@ def create_readme():
 def main():
     """主函数"""
     print("=" * 60)
-    print("🎯 Excel工具集 - 打包脚本")
+    print("🎯 Excel合并同步工具V1.0 - 打包脚本")
     print("=" * 60)
     
     # 检查主程序文件
@@ -179,8 +183,8 @@ def main():
         
         print(f"\n📂 完整路径: {os.path.abspath('dist')}")
         print("\n💡 使用建议:")
-        print("  • 推荐使用 Excel工具集.exe (GUI版本)")
-        print("  • 如需调试请使用 Excel工具集_console.exe")
+        print("  • 推荐使用 Excel合并同步工具V1.0.exe (GUI版本)")
+        print("  • 如需调试请使用 Excel合并同步工具V1.0_console.exe")
         print("  • 首次运行可能需要一些时间加载")
         
         return True
