@@ -132,9 +132,7 @@ class ExcelProcessor:
         unmapped_required = []
         unmapped_available = available_columns.copy()
         
-        print(f"\n🔍 智能列名映射分析...")
-        print(f"📋 需要的列名: {required_columns}")
-        print(f"📋 可用的列名: {available_columns}")
+
         
         # 第一轮：精确匹配和常见变体匹配
         for required in required_columns:
@@ -144,7 +142,7 @@ class ExcelProcessor:
             if required in available_columns:
                 mapping[required] = required
                 unmapped_available.remove(required)
-                print(f"✅ 精确匹配: {required} -> {required}")
+
                 matched = True
                 continue
             
@@ -172,14 +170,20 @@ class ExcelProcessor:
                     best_match, similarity = similar_columns[0]
                     print(f"🔍 找到相似列名: {best_match} -> {required} (相似度: {similarity:.2f})")
                     
-                    # 询问用户是否确认映射
-                    confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
-                    if confirm not in ['n', 'no', '否']:
+                    # 如果相似度为1.00，自动确认映射
+                    if similarity >= 1.0:
                         mapping[required] = best_match
                         unmapped_available.remove(best_match)
-                        print(f"✅ 确认映射: {best_match} -> {required}")
+                        print(f"✅ 自动映射 (完全匹配): {best_match} -> {required}")
                     else:
-                        print(f"⚠️  跳过映射: {required}")
+                        # 询问用户是否确认映射
+                        confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
+                        if confirm not in ['n', 'no', '否']:
+                            mapping[required] = best_match
+                            unmapped_available.remove(best_match)
+                            print(f"✅ 确认映射: {best_match} -> {required}")
+                        else:
+                            print(f"⚠️  跳过映射: {required}")
                 else:
                     print(f"❌ 未找到与 '{required}' 相似的列名")
                     print(f"🤔 请选择:")
@@ -556,14 +560,20 @@ class ExcelProcessor:
                     best_match, similarity = similar_columns[0]
                     print(f"🔍 找到相似列名: {best_match} -> {required} (相似度: {similarity:.2f})")
                     
-                    # 询问用户是否确认映射
-                    confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
-                    if confirm not in ['n', 'no', '否']:
+                    # 如果相似度为1.00，自动确认映射
+                    if similarity >= 1.0:
                         mapping[required] = best_match
                         unmapped_available.remove(best_match)
-                        print(f"✅ 确认映射: {best_match} -> {required}")
+                        print(f"✅ 自动映射 (完全匹配): {best_match} -> {required}")
                     else:
-                        print(f"⚠️  跳过映射: {required}")
+                        # 询问用户是否确认映射
+                        confirm = input(f"是否将文件列名 '{best_match}' 映射到标准字段 '{required}'？(y/n，默认y): ").strip().lower()
+                        if confirm not in ['n', 'no', '否']:
+                            mapping[required] = best_match
+                            unmapped_available.remove(best_match)
+                            print(f"✅ 确认映射: {best_match} -> {required}")
+                        else:
+                            print(f"⚠️  跳过映射: {required}")
                 else:
                     print(f"❌ 未找到与 '{required}' 相似的列名")
                     print(f"🤔 请选择:")
@@ -1042,8 +1052,53 @@ class ExcelProcessor:
                 is_valid, missing_fields, column_mapping = self.validate_required_columns(df, selected_fields)
                 
                 if not is_valid:
-                    print(f"⚠️  警告：文件缺少字段 {missing_fields}，跳过此文件")
-                    continue
+                    print(f"⚠️  警告：文件缺少字段 {missing_fields}")
+                    
+                    # 询问用户是否要处理此文件
+                    print(f"🤔 是否要处理此文件？")
+                    print(f"  1. 是，为缺失字段填充默认值")
+                    print(f"  2. 否，跳过此文件")
+                    
+                    while True:
+                        try:
+                            choice = input("请选择 (1-2，默认1): ").strip()
+                            if not choice:
+                                choice = "1"
+                            
+                            if choice == "1":
+                                print("✅ 继续处理，为缺失字段填充默认值")
+                                break
+                            elif choice == "2":
+                                print("⏭️  跳过此文件")
+                                continue
+                            else:
+                                print("❌ 无效选择，请输入 1 或 2")
+                        except (EOFError, KeyboardInterrupt):
+                            print("✅ 使用默认选择：继续处理")
+                            break
+                    
+                    # 为缺失字段填充默认值
+                    for field in missing_fields:
+                        if field not in column_mapping:
+                            # 根据字段类型填充合适的默认值
+                            if self._is_money_field(field):
+                                default_value = 0
+                            elif "名称" in field or "姓名" in field:
+                                default_value = "<空值>"
+                            elif "编号" in field or "ID" in field:
+                                default_value = "<空值>"
+                            else:
+                                default_value = "<空值>"
+                            
+                            # 在数据框中添加缺失字段，填充默认值
+                            df[field] = default_value
+                            print(f"📝 为缺失字段 '{field}' 填充默认值: {default_value}")
+                    
+                    # 重新验证字段
+                    is_valid, missing_fields, column_mapping = self.validate_required_columns(df, selected_fields)
+                    if not is_valid:
+                        print(f"❌ 字段验证仍然失败，跳过此文件")
+                        continue
                 
                 # 使用映射后的列名
                 mapped_fields = [column_mapping.get(field, field) for field in selected_fields]
@@ -1095,25 +1150,32 @@ class ExcelProcessor:
             print(f"\n🔄 正在按字段 {dedup_fields} 去重...")
             before_count = len(combined_df)
             
-            # 检查是否包含学号和姓名字段
+            # 智能识别学号和姓名字段
             student_id_field = None
             student_name_field = None
             
-            # 查找学号字段
-            for field in dedup_fields:
-                if '学号' in field:
-                    student_id_field = field
-                    break
+            # 智能识别学号字段
+            student_id_field = self._identify_student_id_field(dedup_fields, combined_df.columns)
             
-            # 查找姓名字段
-            for field in combined_df.columns:
-                if '姓名' in field:
-                    student_name_field = field
-                    break
+            # 智能识别姓名字段
+            student_name_field = self._identify_name_field(combined_df.columns)
+            
+            # 如果没有找到学号字段，使用第一个去重字段作为主键字段
+            if not student_id_field and dedup_fields:
+                student_id_field = dedup_fields[0]
             
             print(f"📋 检测到的字段:")
-            print(f"  🔑 学号字段: {student_id_field}")
-            print(f"  👤 姓名字段: {student_name_field}")
+            if student_id_field:
+                field_icon = self._get_field_icon(student_id_field)
+                print(f"  {field_icon} 主键字段: {student_id_field}")
+            else:
+                print(f"  🔑 主键字段: {dedup_fields[0] if dedup_fields else 'None'}")
+            
+            if student_name_field:
+                field_icon = self._get_field_icon(student_name_field)
+                print(f"  {field_icon} 姓名字段: {student_name_field}")
+            else:
+                print(f"  👤 姓名字段: None")
             
             # 查找重复记录（基于去重字段）
             duplicated_mask = combined_df.duplicated(subset=dedup_fields, keep=False)
@@ -1308,18 +1370,7 @@ class ExcelProcessor:
                 else:
                     print(f"\n✅ 所有重复记录都是完全相同的，将自动去除，无需用户处理")
                 
-                print(f"\n" + "🔧" + "-"*58)
-                if self.enable_interactive_dedup:
-                    print(f"💡 去重策略说明:")
-                    print(f"   • 学号+姓名完全相同的记录：自动合并")
-                    print(f"   • 学号相同但姓名不同的记录：询问您的处理方式")
-                    print(f"   • 所有原始重复记录将保存到Excel的'重复记录'工作表中")
-                else:
-                    print(f"💡 去重策略说明:")
-                    print(f"   • 学号+姓名完全相同的记录：自动合并")
-                    print(f"   • 学号相同但姓名不同的记录：保留第一条")
-                    print(f"   • 所有重复记录将保存到Excel的'重复记录'工作表中")
-                print(f"🔧" + "-"*58)
+                # 去重策略说明已移除
             
             # 执行去重处理
             if len(duplicated_records) > 0:
@@ -1328,7 +1379,7 @@ class ExcelProcessor:
                 conflicts_found = 0
                 
                 for group_key, group_df in duplicate_groups:
-                    resolved_records, had_conflict = self.resolve_student_conflicts(group_key, group_df, dedup_fields, student_name_field)
+                    resolved_records, had_conflict = self.resolve_student_conflicts(group_key, group_df, dedup_fields, student_name_field, student_id_field)
                     if not resolved_records.empty:
                         processed_records.append(resolved_records)
                     if had_conflict:
@@ -1349,10 +1400,20 @@ class ExcelProcessor:
                 # 显示处理结果
                 if conflicts_found > 0:
                     print(f"\n🔄 去重处理完成:")
-                    print(f"  📊 发现姓名冲突的学号: {conflicts_found} 个")
+                    if student_id_field and student_name_field:
+                        id_icon = self._get_field_icon(student_id_field)
+                        name_icon = self._get_field_icon(student_name_field)
+                        print(f"  📊 发现{name_icon}冲突的{id_icon}: {conflicts_found} 个")
+                    else:
+                        print(f"  📊 发现字段冲突的重复组: {conflicts_found} 个")
                     print(f"  ✅ 自动合并的重复记录: {len(duplicate_groups) - conflicts_found} 组")
                 else:
-                    print(f"\n✅ 去重处理完成: 所有重复记录都是学号+姓名完全相同，已自动合并")
+                    if student_id_field and student_name_field:
+                        id_icon = self._get_field_icon(student_id_field)
+                        name_icon = self._get_field_icon(student_name_field)
+                        print(f"\n✅ 去重处理完成: 所有重复记录都是{id_icon}+{name_icon}完全相同，已自动合并")
+                    else:
+                        print(f"\n✅ 去重处理完成: 所有重复记录都是完全相同的，已自动合并")
                 
                 # 更新重复记录统计，避免导出时长度不匹配
                 # 重新计算实际被处理的重复记录
@@ -1539,9 +1600,7 @@ class ExcelProcessor:
     
     def run(self):
         """运行主程序"""
-        print("=" * 60)
-        print("🎯 Excel文件处理工具 v2.4")
-        print("=" * 60)
+        
         
         # 显示智能匹配配置（默认启用，不询问用户）
         print(f"\n=== 智能匹配配置 ===")
@@ -1827,7 +1886,7 @@ class ExcelProcessor:
         print(f"\n✅ 冲突解决完成！已选择出现次数最多的值")
         return pd.DataFrame([result_record])
     
-    def resolve_student_conflicts(self, group_key, group_df: pd.DataFrame, dedup_fields: List[str], student_name_field: str) -> tuple:
+    def resolve_student_conflicts(self, group_key, group_df: pd.DataFrame, dedup_fields: List[str], student_name_field: str, student_id_field: str = None) -> tuple:
         """
         解决学生记录冲突：学号相同但姓名不同的情况
         
@@ -1836,6 +1895,7 @@ class ExcelProcessor:
             group_df: 重复组的数据框
             dedup_fields: 去重字段列表
             student_name_field: 学生姓名字段名
+            student_id_field: 学生学号字段名（可选）
             
         Returns:
             (处理后的数据框, 是否有冲突)
@@ -1850,12 +1910,20 @@ class ExcelProcessor:
             # 没有姓名冲突，学号+姓名完全相同，静默合并（保留第一条）
             return group_df.head(1), False
         
-        # 有姓名冲突，需要处理
+        # 有冲突，需要处理
         print(f"\n{'⚠️' + '='*60}")
-        print(f"发现学号相同但姓名不同的记录！")
+        
+        # 智能判断冲突类型
+        if student_id_field and student_name_field:
+            id_icon = self._get_field_icon(student_id_field)
+            name_icon = self._get_field_icon(student_name_field)
+            print(f"发现{id_icon}相同但{name_icon}不同的记录！")
+        else:
+            print(f"发现重复记录存在字段冲突！")
+        
         print(f"{'⚠️' + '='*60}")
         
-        # 显示学号信息
+        # 显示主键信息
         if isinstance(group_key, tuple):
             for i, field in enumerate(dedup_fields):
                 display_value = self._format_display_value(group_key[i])
@@ -1864,28 +1932,66 @@ class ExcelProcessor:
             display_value = self._format_display_value(group_key)
             print(f"🔑 {dedup_fields[0]}: {display_value}")
         
-        # 显示不同的姓名
+        # 显示冲突的字段信息
+        conflict_info = {}
+        exclude_fields = set(['数据来源文件', '数据来源路径'] + dedup_fields)
+        
+        for field in group_df.columns:
+            if field in exclude_fields:
+                continue
+            
+            unique_values = set()
+            for value in group_df[field]:
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(value):
+                    normalized_value = str(value).strip() if str(value).strip() else "<空值>"
+                    unique_values.add(normalized_value)
+                else:
+                    unique_values.add("<空值>")
+            
+            if len(unique_values) > 1:
+                conflict_info[field] = unique_values
+        
+        if conflict_info:
+            print(f"\n📋 发现冲突的字段:")
+            for field, values in conflict_info.items():
+                # 使用辅助函数智能选择图标
+                field_icon = self._get_field_icon(field)
+                
+                print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                for i, value in enumerate(sorted(values), 1):
+                    print(f"    {i}. {value}")
+        
+        # 如果有姓名字段，显示姓名冲突详情
         if student_name_field and student_name_field in group_df.columns:
             unique_names = {}
             for _, row in group_df.iterrows():
                 name = row[student_name_field]
-                if pd.notna(name) and str(name).strip():
-                    normalized_name = str(name).strip()
-                    if normalized_name not in unique_names:
-                        unique_names[normalized_name] = []
-                    unique_names[normalized_name].append(row)
-            
-            print(f"\n👤 发现 {len(unique_names)} 个不同的姓名:")
-            for i, (name, records) in enumerate(unique_names.items(), 1):
-                # 统计该姓名出现的文件
-                files = set()
-                for record in records:
-                    if '数据来源文件' in record:
-                        files.add(str(record['数据来源文件']))
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(name):
+                    normalized_name = str(name).strip() if str(name).strip() else "<空值>"
+                else:
+                    normalized_name = "<空值>"
                 
-                print(f"  {i}. {name} (出现在 {len(records)} 条记录中)")
-                if files:
-                    print(f"     来源文件: {', '.join(sorted(files))}")
+                if normalized_name not in unique_names:
+                    unique_names[normalized_name] = []
+                unique_names[normalized_name].append(row)
+            
+            if len(unique_names) > 1:
+                # 使用辅助函数智能选择图标
+                field_icon = self._get_field_icon(student_name_field)
+                print(f"\n{field_icon} 发现 {len(unique_names)} 个不同的值:")
+                
+                for i, (name, records) in enumerate(unique_names.items(), 1):
+                    # 统计该姓名出现的文件
+                    files = set()
+                    for record in records:
+                        if '数据来源文件' in record:
+                            files.add(str(record['数据来源文件']))
+                    
+                    print(f"  {i}. {name} (出现在 {len(records)} 条记录中)")
+                    if files:
+                        print(f"     来源文件: {', '.join(sorted(files))}")
         
         if not self.enable_interactive_dedup:
             # 自动模式：保留第一条记录
@@ -1895,8 +2001,16 @@ class ExcelProcessor:
         # 交互式模式：询问用户如何处理
         print(f"\n🤔 请选择处理方式:")
         print(f"  1. 保留第一条记录 (默认)")
-        print(f"  2. 手动选择要保留的姓名")
-        print(f"  3. 为每个不同姓名创建单独记录")
+        
+        # 智能判断字段类型并显示相应选项
+        if student_name_field:
+            field_icon = self._get_field_icon(student_name_field)
+            print(f"  2. 手动选择要保留的记录")
+            print(f"  3. 为每个不同值创建单独记录")
+        else:
+            print(f"  2. 手动选择要保留的记录")
+            print(f"  3. 为每个不同值创建单独记录")
+        
         print(f"  4. 跳过此组，不做处理")
         
         while True:
@@ -1907,15 +2021,111 @@ class ExcelProcessor:
                 
                 if choice == "1":
                     print("✅ 保留第一条记录")
-                    return group_df.head(1), True
+                    
+                    # 检查是否还有其他冲突字段需要处理
+                    if student_name_field:
+                        # 如果有姓名字段，检查其他冲突字段
+                        conflict_info = self._get_remaining_conflicts(group_df, [group_df.iloc[0]], student_name_field)
+                        
+                        if conflict_info:
+                            print(f"\n⚠️  发现其他冲突字段，需要进一步处理:")
+                            for field, values in conflict_info.items():
+                                field_icon = self._get_field_icon(field)
+                                print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                                for i, value in enumerate(sorted(values), 1):
+                                    print(f"    {i}. {value}")
+                            
+                            # 询问用户是否要处理其他冲突字段
+                            print(f"\n🤔 是否要处理其他冲突字段？")
+                            print(f"  1. 是，手动选择每个字段的值")
+                            print(f"  2. 否，使用第一条记录的值")
+                            
+                            conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                            if conflict_choice == "1":
+                                # 手动处理其他冲突字段
+                                result_record = self._manual_resolve_remaining_conflicts(group_df.iloc[0], conflict_info)
+                                return pd.DataFrame([result_record]), True
+                            else:
+                                # 使用第一条记录
+                                print("✅ 使用第一条记录的值")
+                                return group_df.head(1), True
+                        else:
+                            # 没有其他冲突字段，直接返回第一条记录
+                            return group_df.head(1), True
+                    else:
+                        # 没有姓名字段，直接返回第一条记录
+                        return group_df.head(1), True
                 
                 elif choice == "2":
-                    result = self._manual_select_student_name(group_df, unique_names, student_name_field)
+                    if student_name_field:
+                        result = self._manual_select_student_name(group_df, unique_names, student_name_field)
+                        # 检查是否还有其他冲突字段需要处理
+                        if hasattr(result, 'iloc') and len(result) > 0:
+                            remaining_conflicts = self._get_remaining_conflicts(group_df, [result.iloc[0]], student_name_field)
+                            if remaining_conflicts:
+                                print(f"\n⚠️  发现其他冲突字段，需要进一步处理:")
+                                for field, values in remaining_conflicts.items():
+                                    field_icon = self._get_field_icon(field)
+                                    print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                                    for i, value in enumerate(sorted(values), 1):
+                                        print(f"    {i}. {value}")
+                                
+                                # 询问用户是否要处理其他冲突字段
+                                print(f"\n🤔 是否要处理其他冲突字段？")
+                                print(f"  1. 是，手动选择每个字段的值")
+                                print(f"  2. 否，使用已选择记录的值")
+                                
+                                conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                                if conflict_choice == "1":
+                                    # 手动处理其他冲突字段
+                                    result_record = self._manual_resolve_remaining_conflicts(result.iloc[0], remaining_conflicts)
+                                    return pd.DataFrame([result_record]), True
+                                else:
+                                    # 使用已选择的记录
+                                    print("✅ 使用已选择记录的值")
+                                    return result, True
+                    else:
+                        result = self._manual_select_record(group_df, conflict_info)
                     return result, True
                 
                 elif choice == "3":
-                    print("✅ 为每个不同姓名创建单独记录")
-                    result = self._create_records_by_name(group_df, unique_names, student_name_field)
+                    if student_name_field:
+                        print("✅ 为每个不同值创建单独记录")
+                        result = self._create_records_by_name(group_df, unique_names, student_name_field)
+                        # 检查是否还有其他冲突字段需要处理
+                        if len(result) > 0:
+                            # 为每个记录检查其他冲突字段
+                            final_records = []
+                            for _, record in result.iterrows():
+                                remaining_conflicts = self._get_remaining_conflicts(group_df, [record], student_name_field)
+                                if remaining_conflicts:
+                                    print(f"\n⚠️  记录 '{record[student_name_field]}' 发现其他冲突字段:")
+                                    for field, values in remaining_conflicts.items():
+                                        field_icon = self._get_field_icon(field)
+                                        print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                                    
+                                    # 询问用户是否要处理其他冲突字段
+                                    print(f"\n🤔 是否要处理记录 '{record[student_name_field]}' 的其他冲突字段？")
+                                    print(f"  1. 是，手动选择每个字段的值")
+                                    print(f"  2. 否，使用当前记录的值")
+                                    
+                                    conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                                    if conflict_choice == "1":
+                                        # 手动处理其他冲突字段
+                                        resolved_record = self._manual_resolve_remaining_conflicts(record, remaining_conflicts)
+                                        final_records.append(resolved_record)
+                                    else:
+                                        # 使用当前记录
+                                        print("✅ 使用当前记录的值")
+                                        final_records.append(record)
+                                else:
+                                    final_records.append(record)
+                            
+                            if final_records:
+                                result = pd.DataFrame(final_records)
+                    else:
+                        print("✅ 为每个不同值创建单独记录")
+                        result = self._create_records_by_conflict_fields(group_df, conflict_info)
                     return result, True
                 
                 elif choice == "4":
@@ -1930,7 +2140,7 @@ class ExcelProcessor:
                 return group_df.head(1), True
     
     def _manual_select_student_name(self, group_df: pd.DataFrame, unique_names: dict, student_name_field: str) -> pd.DataFrame:
-        """手动选择要保留的学生姓名"""
+        """手动选择要保留的学生姓名，并处理其他冲突字段"""
         print(f"\n📝 请选择要保留的姓名:")
         name_list = list(unique_names.keys())
         for i, name in enumerate(name_list, 1):
@@ -1947,13 +2157,110 @@ class ExcelProcessor:
                     
                     print(f"✅ 已选择姓名: {selected_name}")
                     
-                    # 返回第一条匹配的记录
-                    result_df = pd.DataFrame([selected_records[0]])
-                    return result_df
+                    # 检查是否还有其他冲突字段需要处理
+                    conflict_info = self._get_remaining_conflicts(group_df, selected_records, student_name_field)
+                    
+                    if conflict_info:
+                        print(f"\n⚠️  发现其他冲突字段，需要进一步处理:")
+                        for field, values in conflict_info.items():
+                            field_icon = self._get_field_icon(field)
+                            print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                            for i, value in enumerate(sorted(values), 1):
+                                print(f"    {i}. {value}")
+                        
+                        # 询问用户是否要处理其他冲突字段
+                        print(f"\n🤔 是否要处理其他冲突字段？")
+                        print(f"  1. 是，手动选择每个字段的值")
+                        print(f"  2. 否，使用第一条记录的值")
+                        
+                        conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                        if conflict_choice == "1":
+                            # 手动处理其他冲突字段
+                            result_record = self._manual_resolve_remaining_conflicts(selected_records[0], conflict_info)
+                            return pd.DataFrame([result_record])
+                        else:
+                            # 使用第一条记录
+                            print("✅ 使用第一条记录的值")
+                            return pd.DataFrame([selected_records[0]])
+                    else:
+                        # 没有其他冲突字段，直接返回第一条匹配的记录
+                        return pd.DataFrame([selected_records[0]])
                 else:
                     print("❌ 编号超出范围，请重新选择")
             except ValueError:
                 print("❌ 请输入有效的数字")
+    
+    def _get_remaining_conflicts(self, group_df: pd.DataFrame, selected_records: list, student_name_field: str) -> dict:
+        """获取除了姓名字段之外的其他冲突字段"""
+        conflict_info = {}
+        exclude_fields = set(['数据来源文件', '数据来源路径', student_name_field])
+        
+        # 检查整个 group_df 中是否还有其他冲突字段
+        for field in group_df.columns:
+            if field in exclude_fields:
+                continue
+            
+            # 检查该字段在整个组中是否有冲突
+            unique_values = set()
+            for _, record in group_df.iterrows():
+                value = record[field]
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(value):
+                    normalized_value = str(value).strip() if str(value).strip() else "<空值>"
+                    unique_values.add(normalized_value)
+                else:
+                    unique_values.add("<空值>")
+            
+            if len(unique_values) > 1:
+                conflict_info[field] = unique_values
+        
+        return conflict_info
+    
+    def _manual_resolve_remaining_conflicts(self, base_record: pd.Series, conflict_info: dict) -> pd.Series:
+        """手动解决剩余冲突字段"""
+        result_record = base_record.copy()
+        
+        print(f"\n🔧 开始处理其他冲突字段...")
+        print(f"📄 基础记录: {dict(result_record)}")
+        
+        for field, values in conflict_info.items():
+            print(f"\n📝 请选择字段 '{field}' 的值:")
+            print(f"🔍 当前值: {result_record[field]}")
+            print(f"📋 可选值:")
+            
+            # 将 set 转换为 list 以便索引访问
+            values_list = list(values)
+            
+            for i, value in enumerate(values_list, 1):
+                if pd.isna(value):
+                    print(f"  {i}. <空值>")
+                else:
+                    print(f"  {i}. {value}")
+            
+            while True:
+                try:
+                    choice = input(f"请选择 (1-{len(values_list)}): ").strip()
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(values_list):
+                        selected_value = values_list[choice_idx]
+                        old_value = result_record[field]
+                        result_record[field] = selected_value
+                        
+                        if pd.isna(selected_value):
+                            print(f"✅ 已选择: <空值>")
+                        else:
+                            print(f"✅ 已选择: {selected_value}")
+                        
+                        print(f"🔄 字段 '{field}' 更新: {old_value} → {selected_value}")
+                        break
+                    else:
+                        print("❌ 编号超出范围，请重新选择")
+                except ValueError:
+                    print("❌ 请输入有效的数字")
+        
+        print(f"\n✅ 所有冲突字段处理完成！")
+        print(f"📄 最终记录: {dict(result_record)}")
+        return result_record
     
     def _create_records_by_name(self, group_df: pd.DataFrame, unique_names: dict, student_name_field: str) -> pd.DataFrame:
         """为每个不同姓名创建单独记录"""
@@ -2043,6 +2350,71 @@ class ExcelProcessor:
             continue_choice = input("⚠️  备份失败，是否继续处理？(y/n，默认n): ").strip().lower()
             return continue_choice in ['y', 'yes', '是']
 
+    def _is_money_field(self, field_name: str) -> bool:
+        """判断字段是否为金钱字段"""
+        field_lower = field_name.lower()
+        money_keywords = ['金额', '价格', 'price', 'amount', '费用', '成本', 'money', 'money', '元', '￥', '$', '¥']
+        return any(keyword in field_lower for keyword in money_keywords)
+    
+    def _is_money_value_equal(self, val1, val2) -> bool:
+        """
+        比较两个金钱值是否相等
+        
+        Args:
+            val1: 第一个值
+            val2: 第二个值
+            
+        Returns:
+            bool: 如果金钱值相等返回True，否则返回False
+        """
+        # 如果两个值都是NaN，认为相等
+        if pd.isna(val1) and pd.isna(val2):
+            return True
+        
+        # 如果一个是NaN另一个不是，认为不相等
+        if pd.isna(val1) or pd.isna(val2):
+            return False
+        
+        try:
+            # 尝试转换为数值进行比较
+            num1 = float(str(val1).replace(',', '').replace('￥', '').replace('$', '').replace('¥', '').replace('元', ''))
+            num2 = float(str(val2).replace(',', '').replace('￥', '').replace('$', '').replace('¥', '').replace('元', ''))
+            
+            # 使用小的容差值比较浮点数
+            return abs(num1 - num2) < 0.01
+        except (ValueError, TypeError):
+            # 如果无法转换为数值，回退到字符串比较
+            return str(val1).strip() == str(val2).strip()
+    
+    def _get_field_icon(self, field_name: str) -> str:
+        """根据字段名称智能选择图标"""
+        field_lower = field_name.lower()
+        
+        # 姓名相关字段
+        if any(keyword in field_lower for keyword in ['姓名', '名字', 'name', '姓', '名']):
+            return "👤"
+        # 名称/标题相关字段
+        elif any(keyword in field_lower for keyword in ['名称', '标题', 'title', '名称']):
+            return "🏷️"
+        # 地址相关字段
+        elif any(keyword in field_name.lower() for keyword in ['地址', '住址', 'address', '位置']):
+            return "📍"
+        # 电话相关字段
+        elif any(keyword in field_name.lower() for keyword in ['电话', '手机', 'phone', 'tel', '号码']):
+            return "📞"
+        # 邮箱相关字段
+        elif any(keyword in field_name.lower() for keyword in ['邮箱', '邮件', 'email', '信箱']):
+            return "📧"
+        # 日期时间相关字段
+        elif any(keyword in field_name.lower() for keyword in ['日期', '时间', 'date', 'time', '年', '月', '日']):
+            return "📅"
+        # 数量金额相关字段
+        elif any(keyword in field_name.lower() for keyword in ['数量', '金额', '价格', 'price', 'amount', '费用', '成本']):
+            return "💰"
+        # 默认图标
+        else:
+            return "🔍"
+
     def _format_display_value(self, value) -> str:
         """
         格式化显示值，处理数值类型的显示格式
@@ -2093,9 +2465,15 @@ class ExcelProcessor:
                 # 如果一个是NaN另一个不是，认为不同
                 elif pd.isna(first_val) or pd.isna(current_val):
                     return True  # 有冲突
-                # 如果两个值都不是NaN，比较字符串形式
-                elif str(first_val).strip() != str(current_val).strip():
-                    return True  # 有冲突
+                
+                # 特殊处理金钱字段
+                if self._is_money_field(field):
+                    if not self._is_money_value_equal(first_val, current_val):
+                        return True  # 金钱值不同，有冲突
+                else:
+                    # 非金钱字段，比较字符串形式
+                    if str(first_val).strip() != str(current_val).strip():
+                        return True  # 有冲突
         
         return False  # 所有记录完全相同，无冲突
 
@@ -2223,7 +2601,7 @@ class ExcelProcessor:
 
     def _group_has_student_name_conflict(self, group_df: pd.DataFrame, dedup_fields: List[str], student_name_field: str) -> bool:
         """
-        检查重复组是否存在学号相同但姓名不同的冲突
+        检查重复组是否存在冲突（学号相同但姓名不同，或其他字段不同）
         
         Args:
             group_df: 重复组的数据框
@@ -2231,13 +2609,13 @@ class ExcelProcessor:
             student_name_field: 学生姓名字段名
             
         Returns:
-            bool: 如果学号相同但姓名不同返回True，否则返回False
+            bool: 如果存在冲突返回True，否则返回False
         """
-        if len(group_df) <= 1 or not student_name_field:
+        if len(group_df) <= 1:
             return False
         
-        # 检查姓名字段是否存在不同的值
-        if student_name_field in group_df.columns:
+        # 如果有姓名字段，检查姓名冲突
+        if student_name_field and student_name_field in group_df.columns:
             unique_names = set()
             for name in group_df[student_name_field]:
                 if pd.notna(name) and str(name).strip():
@@ -2245,7 +2623,25 @@ class ExcelProcessor:
                     unique_names.add(normalized_name)
             
             # 如果有超过1个不同的姓名，则认为有冲突
-            return len(unique_names) > 1
+            if len(unique_names) > 1:
+                return True
+        
+        # 检查其他非去重字段是否存在冲突
+        exclude_fields = set(['数据来源文件', '数据来源路径'] + dedup_fields)
+        for field in group_df.columns:
+            if field in exclude_fields:
+                continue
+            
+            # 检查该字段是否有不同的值
+            unique_values = set()
+            for value in group_df[field]:
+                if pd.notna(value) and str(value).strip():
+                    normalized_value = str(value).strip()
+                    unique_values.add(normalized_value)
+            
+            # 如果有超过1个不同的值，则认为有冲突
+            if len(unique_values) > 1:
+                return True
         
         return False
     
@@ -2268,6 +2664,147 @@ class ExcelProcessor:
             if len(normalized_values) > 1:
                 return True
         return False
+    
+    def _manual_select_record(self, group_df: pd.DataFrame, conflict_info: Dict[str, set]) -> pd.DataFrame:
+        """
+        手动选择要保留的记录（适用于非姓名字段冲突）
+        
+        Args:
+            group_df: 重复组的数据框
+            conflict_info: 冲突字段信息字典
+            
+        Returns:
+            选择保留的记录
+        """
+        print(f"\n📋 请选择要保留的记录:")
+        
+        # 显示每条记录的详细信息
+        for i, (_, record) in enumerate(group_df.iterrows(), 1):
+            print(f"\n  📝 记录 {i}:")
+            for field, value in record.items():
+                if field in ['数据来源文件', '数据来源路径']:
+                    continue
+                display_value = self._format_display_value(value)
+                if field in conflict_info:
+                    print(f"    🔍 {field}: {display_value} (冲突字段)")
+                else:
+                    print(f"    📊 {field}: {display_value}")
+        
+        while True:
+            try:
+                choice = input(f"\n请选择要保留的记录 (1-{len(group_df)}): ").strip()
+                if not choice:
+                    choice = "1"
+                
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(group_df):
+                    selected_record = group_df.iloc[choice_num - 1:choice_num]
+                    print(f"✅ 已选择记录 {choice_num}")
+                    return selected_record
+                else:
+                    print(f"❌ 请输入 1-{len(group_df)} 之间的数字")
+                    
+            except ValueError:
+                print("❌ 请输入有效的数字")
+            except KeyboardInterrupt:
+                print("\n⚠️  用户中断，保留第一条记录")
+                return group_df.head(1)
+    
+    def _create_records_by_conflict_fields(self, group_df: pd.DataFrame, conflict_info: Dict[str, set]) -> pd.DataFrame:
+        """
+        为每个不同值创建单独记录（适用于非姓名字段冲突）
+        
+        Args:
+            group_df: 重复组的数据框
+            conflict_info: 冲突字段信息字典
+            
+        Returns:
+            处理后的记录
+        """
+        result_records = []
+        
+        # 按冲突字段分组
+        for field, unique_values in conflict_info.items():
+            for value in unique_values:
+                # 找到该值的所有记录
+                field_records = group_df[group_df[field] == value]
+                if not field_records.empty:
+                    # 保留第一条记录
+                    result_records.append(field_records.head(1))
+        
+        if result_records:
+            return pd.concat(result_records, ignore_index=True)
+        else:
+            return group_df.head(1)
+    
+    def _identify_student_id_field(self, dedup_fields: List[str], all_columns: List[str]) -> str:
+        """
+        智能识别学号字段
+        
+        Args:
+            dedup_fields: 去重字段列表
+            all_columns: 所有可用字段列表
+            
+        Returns:
+            识别出的学号字段名，如果没有找到返回None
+        """
+        # 学号字段的常见关键词和模式
+        id_keywords = [
+            '学号', '学生号', '学籍号', '编号', 'ID', 'id', 'Id',
+            '工号', '员工号', '职工号', '编号', '号码',
+            '单位号', '部门号', '机构号', '组织号',
+            '账号', '用户号', '会员号', '客户号',
+            '订单号', '流水号', '序列号', '编码'
+        ]
+        
+        # 优先在去重字段中查找
+        for field in dedup_fields:
+            field_lower = field.lower()
+            for keyword in id_keywords:
+                if keyword in field_lower:
+                    return field
+        
+        # 在去重字段中查找包含数字的字段
+        for field in dedup_fields:
+            if any(char.isdigit() for char in field):
+                return field
+        
+        # 在所有字段中查找学号相关字段
+        for field in all_columns:
+            field_lower = field.lower()
+            for keyword in id_keywords:
+                if keyword in field_lower:
+                    return field
+        
+        return None
+    
+    def _identify_name_field(self, all_columns: List[str]) -> str:
+        """
+        智能识别姓名字段
+        
+        Args:
+            all_columns: 所有可用字段列表
+            
+        Returns:
+            识别出的姓名字段名，如果没有找到返回None
+        """
+        # 姓名字段的常见关键词和模式
+        name_keywords = [
+            '姓名', '名字', '名称', '全名', '中文名', '英文名',
+            '姓', '名', '名字', '称谓',
+            '单位名称', '部门名称', '机构名称', '组织名称',
+            '产品名称', '商品名称', '项目名称', '标题',
+            '名称', '名字', '标题', '描述'
+        ]
+        
+        # 在所有字段中查找姓名相关字段
+        for field in all_columns:
+            field_lower = field.lower()
+            for keyword in name_keywords:
+                if keyword in field_lower:
+                    return field
+        
+        return None
 
 def main():
     """主函数"""

@@ -854,10 +854,7 @@ class ExcelProcessor:
     
     def run(self):
         """运行主程序"""
-        print("=" * 60)
-        print("🎯 Excel文件处理工具 v2.4")
-        print("📋 功能：多文件数据合并、字段选择、去重处理、学生姓名补充、单源同步、多源同步")
-        print("=" * 60)
+        
         
         # 选择操作模式
         mode = self.select_operation_mode()
@@ -2003,34 +2000,39 @@ class ExcelProcessor:
                         for i, (field, sim) in enumerate(similar_fields, 1):
                             print(f"  {i}. {field} (相似度: {sim:.2f})")
                         
-                        print(f"\n🤔 请选择:")
-                        print(f"  1. 使用相似字段 (输入编号，默认选择1)")
-                        print(f"  2. 手动选择其他字段 (输入 'm')")
-                        print(f"  3. 跳过此源文件 (输入 's')")
-                        
-                        while True:
-                            choice = input("请选择 (默认1): ").strip().lower()
-                            if not choice:  # 用户按回车，默认选择第一个相似字段
-                                choice = "1"
+                        # 如果第一个相似字段的相似度为1.00，自动选择
+                        if similar_fields[0][1] >= 1.0:
+                            selected_source_field = similar_fields[0][0]
+                            print(f"✅ 自动选择完全匹配字段: {selected_source_field} (相似度: {similar_fields[0][1]:.2f})")
+                        else:
+                            print(f"\n🤔 请选择:")
+                            print(f"  1. 使用相似字段 (输入编号，默认选择1)")
+                            print(f"  2. 手动选择其他字段 (输入 'm')")
+                            print(f"  3. 跳过此源文件 (输入 's')")
                             
-                            if choice == 's':
-                                print(f"⏭️  跳过源文件 '{source_filename}'")
-                                break
-                            elif choice == 'm':
-                                # 手动选择
-                                selected_source_field = self._manual_select_source_field(source_columns, source_filename)
-                                break
-                            else:
-                                try:
-                                    choice_idx = int(choice) - 1
-                                    if 0 <= choice_idx < len(similar_fields):
-                                        selected_source_field = similar_fields[choice_idx][0]
-                                        print(f"✅ 选择了相似字段: {selected_source_field}")
-                                        break
-                                    else:
-                                        print("❌ 编号超出范围，请重新选择")
-                                except ValueError:
-                                    print("❌ 请输入有效的编号、'm' 或 's'")
+                            while True:
+                                choice = input("请选择 (默认1): ").strip().lower()
+                                if not choice:  # 用户按回车，默认选择第一个相似字段
+                                    choice = "1"
+                                
+                                if choice == 's':
+                                    print(f"⏭️  跳过源文件 '{source_filename}'")
+                                    break
+                                elif choice == 'm':
+                                    # 手动选择
+                                    selected_source_field = self._manual_select_source_field(source_columns, source_filename)
+                                    break
+                                else:
+                                    try:
+                                        choice_idx = int(choice) - 1
+                                        if 0 <= choice_idx < len(similar_fields):
+                                            selected_source_field = similar_fields[choice_idx][0]
+                                            print(f"✅ 选择了相似字段: {selected_source_field}")
+                                            break
+                                        else:
+                                            print("❌ 编号超出范围，请重新选择")
+                                    except ValueError:
+                                        print("❌ 请输入有效的编号、'm' 或 's'")
                     else:
                         print(f"❌ 未找到与 '{self.link_field}' 相似的字段")
                         print(f"🤔 请选择:")
@@ -2190,34 +2192,40 @@ class ExcelProcessor:
                             for i, (field, sim) in enumerate(similar_fields, 1):
                                 print(f"    {i}. {field} (相似度: {sim:.2f})")
                             
-                            print(f"  🤔 请选择:")
-                            print(f"    1. 使用相似字段 (输入编号，默认选择1)")
-                            print(f"    2. 手动选择其他字段 (输入 'm')")
-                            print(f"    3. 跳过此源文件 (输入 's')")
-                            
-                            while True:
-                                choice = input(f"  对于源文件 '{source_filename}' 请选择 (默认1): ").strip().lower()
-                                if not choice:  # 用户按回车，默认选择第一个相似字段
-                                    choice = "1"
+                            # 如果第一个相似字段的相似度为1.00，自动选择
+                            if similar_fields[0][1] >= 1.0:
+                                selected_source_field = similar_fields[0][0]
+                                print(f"  ✅ 自动选择完全匹配字段: {selected_source_field} (相似度: {similar_fields[0][1]:.2f})")
+                                field_has_mapping = True
+                            else:
+                                print(f"  🤔 请选择:")
+                                print(f"    1. 使用相似字段 (输入编号，默认选择1)")
+                                print(f"    2. 手动选择其他字段 (输入 'm')")
+                                print(f"    3. 跳过此源文件 (输入 's')")
                                 
-                                if choice == 's':
-                                    print(f"  ⏭️  跳过源文件 '{source_filename}'")
-                                    break
-                                elif choice == 'm':
-                                    selected_source_field = self._manual_select_update_field(source_columns, source_filename, target_field)
-                                    break
-                                else:
-                                    try:
-                                        choice_idx = int(choice) - 1
-                                        if 0 <= choice_idx < len(similar_fields):
-                                            selected_source_field = similar_fields[choice_idx][0]
-                                            print(f"  ✅ 选择了相似字段: {selected_source_field}")
-                                            field_has_mapping = True
-                                            break
-                                        else:
-                                            print("  ❌ 编号超出范围，请重新选择")
-                                    except ValueError:
-                                        print("  ❌ 请输入有效的编号、'm' 或 's'")
+                                while True:
+                                    choice = input(f"  对于源文件 '{source_filename}' 请选择 (默认1): ").strip().lower()
+                                    if not choice:  # 用户按回车，默认选择第一个相似字段
+                                        choice = "1"
+                                    
+                                    if choice == 's':
+                                        print(f"  ⏭️  跳过源文件 '{source_filename}'")
+                                        break
+                                    elif choice == 'm':
+                                        selected_source_field = self._manual_select_update_field(source_columns, source_filename, target_field)
+                                        break
+                                    else:
+                                        try:
+                                            choice_idx = int(choice) - 1
+                                            if 0 <= choice_idx < len(similar_fields):
+                                                selected_source_field = similar_fields[choice_idx][0]
+                                                print(f"  ✅ 选择了相似字段: {selected_source_field}")
+                                                field_has_mapping = True
+                                                break
+                                            else:
+                                                print("  ❌ 编号超出范围，请重新选择")
+                                        except ValueError:
+                                            print("  ❌ 请输入有效的编号、'm' 或 's'")
                         else:
                             print(f"  📄 源文件 '{source_filename}' - 未找到与 '{target_field}' 相似的字段")
                             print(f"  🤔 请选择:")
