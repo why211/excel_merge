@@ -1052,8 +1052,53 @@ class ExcelProcessor:
                 is_valid, missing_fields, column_mapping = self.validate_required_columns(df, selected_fields)
                 
                 if not is_valid:
-                    print(f"⚠️  警告：文件缺少字段 {missing_fields}，跳过此文件")
-                    continue
+                    print(f"⚠️  警告：文件缺少字段 {missing_fields}")
+                    
+                    # 询问用户是否要处理此文件
+                    print(f"🤔 是否要处理此文件？")
+                    print(f"  1. 是，为缺失字段填充默认值")
+                    print(f"  2. 否，跳过此文件")
+                    
+                    while True:
+                        try:
+                            choice = input("请选择 (1-2，默认1): ").strip()
+                            if not choice:
+                                choice = "1"
+                            
+                            if choice == "1":
+                                print("✅ 继续处理，为缺失字段填充默认值")
+                                break
+                            elif choice == "2":
+                                print("⏭️  跳过此文件")
+                                continue
+                            else:
+                                print("❌ 无效选择，请输入 1 或 2")
+                        except (EOFError, KeyboardInterrupt):
+                            print("✅ 使用默认选择：继续处理")
+                            break
+                    
+                    # 为缺失字段填充默认值
+                    for field in missing_fields:
+                        if field not in column_mapping:
+                            # 根据字段类型填充合适的默认值
+                            if self._is_money_field(field):
+                                default_value = 0
+                            elif "名称" in field or "姓名" in field:
+                                default_value = "<空值>"
+                            elif "编号" in field or "ID" in field:
+                                default_value = "<空值>"
+                            else:
+                                default_value = "<空值>"
+                            
+                            # 在数据框中添加缺失字段，填充默认值
+                            df[field] = default_value
+                            print(f"📝 为缺失字段 '{field}' 填充默认值: {default_value}")
+                    
+                    # 重新验证字段
+                    is_valid, missing_fields, column_mapping = self.validate_required_columns(df, selected_fields)
+                    if not is_valid:
+                        print(f"❌ 字段验证仍然失败，跳过此文件")
+                        continue
                 
                 # 使用映射后的列名
                 mapped_fields = [column_mapping.get(field, field) for field in selected_fields]
@@ -1897,9 +1942,12 @@ class ExcelProcessor:
             
             unique_values = set()
             for value in group_df[field]:
-                if pd.notna(value) and str(value).strip():
-                    normalized_value = str(value).strip()
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(value):
+                    normalized_value = str(value).strip() if str(value).strip() else "<空值>"
                     unique_values.add(normalized_value)
+                else:
+                    unique_values.add("<空值>")
             
             if len(unique_values) > 1:
                 conflict_info[field] = unique_values
@@ -1919,11 +1967,15 @@ class ExcelProcessor:
             unique_names = {}
             for _, row in group_df.iterrows():
                 name = row[student_name_field]
-                if pd.notna(name) and str(name).strip():
-                    normalized_name = str(name).strip()
-                    if normalized_name not in unique_names:
-                        unique_names[normalized_name] = []
-                    unique_names[normalized_name].append(row)
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(name):
+                    normalized_name = str(name).strip() if str(name).strip() else "<空值>"
+                else:
+                    normalized_name = "<空值>"
+                
+                if normalized_name not in unique_names:
+                    unique_names[normalized_name] = []
+                unique_names[normalized_name].append(row)
             
             if len(unique_names) > 1:
                 # 使用辅助函数智能选择图标
@@ -2007,6 +2059,31 @@ class ExcelProcessor:
                 elif choice == "2":
                     if student_name_field:
                         result = self._manual_select_student_name(group_df, unique_names, student_name_field)
+                        # 检查是否还有其他冲突字段需要处理
+                        if hasattr(result, 'iloc') and len(result) > 0:
+                            remaining_conflicts = self._get_remaining_conflicts(group_df, [result.iloc[0]], student_name_field)
+                            if remaining_conflicts:
+                                print(f"\n⚠️  发现其他冲突字段，需要进一步处理:")
+                                for field, values in remaining_conflicts.items():
+                                    field_icon = self._get_field_icon(field)
+                                    print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                                    for i, value in enumerate(sorted(values), 1):
+                                        print(f"    {i}. {value}")
+                                
+                                # 询问用户是否要处理其他冲突字段
+                                print(f"\n🤔 是否要处理其他冲突字段？")
+                                print(f"  1. 是，手动选择每个字段的值")
+                                print(f"  2. 否，使用已选择记录的值")
+                                
+                                conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                                if conflict_choice == "1":
+                                    # 手动处理其他冲突字段
+                                    result_record = self._manual_resolve_remaining_conflicts(result.iloc[0], remaining_conflicts)
+                                    return pd.DataFrame([result_record]), True
+                                else:
+                                    # 使用已选择的记录
+                                    print("✅ 使用已选择记录的值")
+                                    return result, True
                     else:
                         result = self._manual_select_record(group_df, conflict_info)
                     return result, True
@@ -2015,6 +2092,37 @@ class ExcelProcessor:
                     if student_name_field:
                         print("✅ 为每个不同值创建单独记录")
                         result = self._create_records_by_name(group_df, unique_names, student_name_field)
+                        # 检查是否还有其他冲突字段需要处理
+                        if len(result) > 0:
+                            # 为每个记录检查其他冲突字段
+                            final_records = []
+                            for _, record in result.iterrows():
+                                remaining_conflicts = self._get_remaining_conflicts(group_df, [record], student_name_field)
+                                if remaining_conflicts:
+                                    print(f"\n⚠️  记录 '{record[student_name_field]}' 发现其他冲突字段:")
+                                    for field, values in remaining_conflicts.items():
+                                        field_icon = self._get_field_icon(field)
+                                        print(f"  {field_icon} {field}: {len(values)} 个不同值")
+                                    
+                                    # 询问用户是否要处理其他冲突字段
+                                    print(f"\n🤔 是否要处理记录 '{record[student_name_field]}' 的其他冲突字段？")
+                                    print(f"  1. 是，手动选择每个字段的值")
+                                    print(f"  2. 否，使用当前记录的值")
+                                    
+                                    conflict_choice = input("请选择 (1-2，默认2): ").strip()
+                                    if conflict_choice == "1":
+                                        # 手动处理其他冲突字段
+                                        resolved_record = self._manual_resolve_remaining_conflicts(record, remaining_conflicts)
+                                        final_records.append(resolved_record)
+                                    else:
+                                        # 使用当前记录
+                                        print("✅ 使用当前记录的值")
+                                        final_records.append(record)
+                                else:
+                                    final_records.append(record)
+                            
+                            if final_records:
+                                result = pd.DataFrame(final_records)
                     else:
                         print("✅ 为每个不同值创建单独记录")
                         result = self._create_records_by_conflict_fields(group_df, conflict_info)
@@ -2096,9 +2204,12 @@ class ExcelProcessor:
             unique_values = set()
             for _, record in group_df.iterrows():
                 value = record[field]
-                if pd.notna(value) and str(value).strip():
-                    normalized_value = str(value).strip()
+                # 修改：包含空值，因为空值也是一种有效的值，需要用户选择
+                if pd.notna(value):
+                    normalized_value = str(value).strip() if str(value).strip() else "<空值>"
                     unique_values.add(normalized_value)
+                else:
+                    unique_values.add("<空值>")
             
             if len(unique_values) > 1:
                 conflict_info[field] = unique_values
